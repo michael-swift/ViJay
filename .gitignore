@@ -1,1 +1,16 @@
 node_modules/
+
+# Generated image files
+**/png/
+**/frames/
+
+# Video generation intermediates
+**/*-scaled/
+**/*-sequence/
+
+# Video output
+*.mp4
+
+# Large binary assets
+**/assets/
+**/assets.json
