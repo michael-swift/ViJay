@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>VIJAY</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #000; overflow: hidden; cursor: none; }
+    canvas { display: block; width: 100vw; height: 100vh; }
+    #hud {
+      position: fixed;
+      top: 12px;
+      left: 12px;
+      color: #0f0;
+      font: 12px/1.4 monospace;
+      opacity: 0;
+      transition: opacity 0.3s;
+      pointer-events: none;
+      text-shadow: 0 0 4px #0f0;
+      z-index: 10;
+    }
+    #hud.visible { opacity: 0.8; }
+    #hud .label { color: #888; }
+    #hud .value { color: #0f0; }
+    #hud .hot { color: #f00; }
+  </style>
+</head>
+<body>
+  <div id="hud">
+    <div>VIJAY <span class="label">v1</span></div>
+    <div><span class="label">FX:</span> <span id="hud-effect" class="value">feedback</span></div>
+    <div><span class="label">INT:</span> <span id="hud-intensity" class="value">0.5</span></div>
+    <div><span class="label">FB:</span> <span id="hud-feedback" class="value">0.85</span></div>
+    <div><span class="label">IMG:</span> <span id="hud-image" class="value">-</span></div>
+    <div><span class="label">IMG2:</span> <span id="hud-image2" class="value">-</span></div>
+    <div><span class="label">MIX:</span> <span id="hud-blend" class="value">off</span></div>
+    <div><span class="label">MODE:</span> <span id="hud-mode" class="value">manual</span></div>
+    <div><span class="label">CAM:</span> <span id="hud-camera" class="value">off</span></div>
+    <div><span class="label">FPS:</span> <span id="hud-fps" class="value">0</span></div>
+    <div style="margin-top:8px;color:#555">H = toggle HUD</div>
+  </div>
+
+  <!-- Three.js from CDN -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+
+  <!-- App modules -->
+  <script src="js/shaders/feedback.frag.js"></script>
+  <script src="js/shaders/glitch.frag.js"></script>
+  <script src="js/shaders/kaleidoscope.frag.js"></script>
+  <script src="js/shaders/colorshift.frag.js"></script>
+  <script src="js/shaders/noise.frag.js"></script>
+  <script src="js/shaders/premix.frag.js"></script>
+  <script src="js/shaders/composite.frag.js"></script>
+  <script src="js/connection.js"></script>
+  <script src="js/images.js"></script>
+  <script src="js/audio.js"></script>
+  <script src="js/camera.js"></script>
+  <script src="js/effects.js"></script>
+  <script src="js/engine.js"></script>
+</body>
+</html>

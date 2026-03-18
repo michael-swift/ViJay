@@ -4,9 +4,18 @@ You are in a drawing repo. You can create art by writing SVG files.
 
 ## Workflow
 
+### Manual (simple drawings)
 1. **Create SVG**: Write your drawing to `drawings/svg/your-name.svg`
-2. **Convert**: Run `node convert.js drawings/svg/your-name.svg`
+2. **Convert**: Run `node tools/convert.js drawings/svg/your-name.svg`
 3. **View**: Read `drawings/png/your-name.png` to see your creation
+
+### Programmatic (complex/animated)
+For dense patterns, noise, or animations - **write a generator script** instead of hand-crafting SVG:
+1. **Create generator**: Write a Node.js script that outputs SVG to stdout
+2. **Generate**: Run `node your-generator.js > output.svg`
+3. **Convert & view**: Same as above
+
+See `tools/noise-generator.js` for a template with seeded randomness for reproducible animations.
 
 ## SVG Basics
 

@@ -1,0 +1,14 @@
+{
+  "name": "vijay-vj",
+  "version": "1.0.0",
+  "description": "Agentic live VJ system",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "chokidar": "^3.5.3",
+    "express": "^4.18.0",
+    "ws": "^8.16.0"
+  }
+}
