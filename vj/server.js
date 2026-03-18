@@ -492,10 +492,11 @@ const autopilot = {
     const darkColor = 'color:' + darkColors[Math.floor(Math.random() * darkColors.length)];
 
     return [
-      // Scene: Anchor fullscreen with gentle feedback
+      // Scene: Anchor fullscreen with gentle feedback + blended photo
       [
         { id: 0, rect: { x: 0, y: 0, w: 1, h: 1 }, effect: 'feedback', source: anchor,
-          state: { ...p, rotation: p.rotation * 0.5, sourceMix: 0.5 } },
+          source2: sources[0] || null,
+          state: { ...p, rotation: p.rotation * 0.5, sourceMix: 0.5, blend2: 0.25, blendMode: 0 } },
       ],
 
       // Scene: Split — anchor left, photo right
@@ -516,12 +517,13 @@ const autopilot = {
           state: p },
       ],
 
-      // Scene: Spotlight — dark sides, photo center
+      // Scene: Spotlight — dark sides, blended photo center
       [
         { id: 0, rect: { x: 0, y: 0, w: 0.2, h: 1 }, effect: 'colorshift', source: darkColor,
           state: { intensity: 0.3, feedbackAmount: 0.9, rotation: 0.001, brightness: 0.6, sourceMix: 0.1 } },
         { id: 1, rect: { x: 0.2, y: 0, w: 0.6, h: 1 }, effect: this.pickEffect(), source: sources[0] || anchor,
-          state: p },
+          source2: sources[1] || null,
+          state: { ...p, blend2: this.energy > 0.5 ? 0.35 : 0, blendMode: Math.floor(Math.random() * 4) } },
         { id: 2, rect: { x: 0.8, y: 0, w: 0.2, h: 1 }, effect: 'colorshift', source: darkColor,
           state: { intensity: 0.3, feedbackAmount: 0.9, rotation: -0.001, brightness: 0.6, sourceMix: 0.1 } },
       ],
@@ -556,10 +558,12 @@ const autopilot = {
           state: { intensity: 0.4, feedbackAmount: 0.85, rotation: 0.002, brightness: 0.5, sourceMix: 0.15 } },
       ],
 
-      // Scene: Full photo/video blast (high energy only gets this)
+      // Scene: Full blast — two sources smashed together
       [
         { id: 0, rect: { x: 0, y: 0, w: 1, h: 1 }, effect: this.pickEffect(), source: sources[0] || anchor,
-          state: { ...p, intensity: Math.min(p.intensity * 1.2, 1), glitch: p.glitch + 0.1 } },
+          source2: sources[1] || sources[0] || null,
+          state: { ...p, intensity: Math.min(p.intensity * 1.2, 1), glitch: p.glitch + 0.1,
+            blend2: 0.4 + this.energy * 0.3, blendMode: [0, 1, 3, 4][Math.floor(Math.random() * 4)] } },
       ],
     ];
   },

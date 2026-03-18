@@ -16,6 +16,7 @@ window.SHADER_COMPOSITE = {
     uniform float uBrightness;
     uniform float uFlash;        // 0-1, strobe flash
     uniform float uBlackout;     // 0 or 1
+    uniform float uOpacity;      // panel fade in/out (0-1)
     uniform vec2 uResolution;
 
     void main() {
@@ -23,6 +24,9 @@ window.SHADER_COMPOSITE = {
 
       // Brightness
       color.rgb *= uBrightness;
+
+      // Panel opacity (for smooth transitions)
+      color.rgb *= uOpacity;
 
       // Vignette
       vec2 center = vUv - 0.5;

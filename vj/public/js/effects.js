@@ -12,6 +12,7 @@ VJ.effects = (function() {
     return {
       tPrev: { value: null },
       tSource: { value: null },
+      tSource2: { value: null },
       uTime: { value: 0 },
       uIntensity: { value: 0.5 },
       uFeedback: { value: 0.85 },
@@ -22,6 +23,8 @@ VJ.effects = (function() {
       uColorShift: { value: 0.0 },
       uBeat: { value: 0.0 },
       uSourceMix: { value: 0.5 },
+      uBlend2: { value: 0.0 },
+      uBlendMode: { value: 0 },
       uResolution: { value: new THREE.Vector2(window.innerWidth, window.innerHeight) },
     };
   }
@@ -87,6 +90,9 @@ VJ.effects = (function() {
     if (params.sourceMix !== undefined) u.uSourceMix.value = params.sourceMix;
     if (params.prevTexture !== undefined) u.tPrev.value = params.prevTexture;
     if (params.sourceTexture !== undefined) u.tSource.value = params.sourceTexture;
+    if (params.sourceTexture2 !== undefined) u.tSource2.value = params.sourceTexture2;
+    if (params.blend2 !== undefined) u.uBlend2.value = params.blend2;
+    if (params.blendMode !== undefined) u.uBlendMode.value = params.blendMode;
     if (params.resolution !== undefined) u.uResolution.value.copy(params.resolution);
   }
 
@@ -107,6 +113,9 @@ VJ.effects = (function() {
     if (params.sourceMix !== undefined) u.uSourceMix.value = params.sourceMix;
     if (params.prevTexture !== undefined) u.tPrev.value = params.prevTexture;
     if (params.sourceTexture !== undefined) u.tSource.value = params.sourceTexture;
+    if (params.sourceTexture2 !== undefined) u.tSource2.value = params.sourceTexture2;
+    if (params.blend2 !== undefined) u.uBlend2.value = params.blend2;
+    if (params.blendMode !== undefined) u.uBlendMode.value = params.blendMode;
     if (params.resolution !== undefined) u.uResolution.value.copy(params.resolution);
   }
 

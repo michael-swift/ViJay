@@ -25,6 +25,9 @@ window.SHADER_MIRROR = {
     uniform float uBrightness;
     uniform float uGlitch;
     uniform float uColorShift;
+    uniform sampler2D tSource2;
+    uniform float uBlend2;
+    uniform int uBlendMode;
 
     void main() {
       vec2 uv = vUv;
@@ -93,6 +96,15 @@ window.SHADER_MIRROR = {
 
       // --- Inject source ---
       vec4 source = texture2D(tSource, vUv);
+      if (uBlend2 > 0.0) {
+        vec4 src2 = texture2D(tSource2, vUv);
+        if (uBlendMode == 0) source = mix(source, src2, uBlend2);
+        else if (uBlendMode == 1) source = source + src2 * uBlend2;
+        else if (uBlendMode == 2) source = mix(source, source * src2, uBlend2);
+        else if (uBlendMode == 3) source = mix(source, 1.0 - (1.0 - source) * (1.0 - src2), uBlend2);
+        else source = mix(source, abs(source - src2), uBlend2);
+        source.a = 1.0;
+      }
       float srcMix = uSourceMix * (1.0 - uFeedback) + uBeat * 0.2;
       color = mix(color * uFeedback, source, clamp(srcMix, 0.0, 1.0));
 

@@ -25,6 +25,9 @@ window.SHADER_FEEDBACK = {
     uniform vec2 uResolution;
     uniform float uSourceMix;      // how much source image to inject (0-1)
     uniform float uBeat;           // beat pulse (0-1, decays)
+    uniform sampler2D tSource2;    // second source for blending
+    uniform float uBlend2;         // how much second source to blend in (0-1)
+    uniform int uBlendMode;        // 0=mix, 1=add, 2=multiply, 3=screen, 4=diff
 
     // Rotate UV around center
     vec2 rotateUV(vec2 uv, float angle) {
@@ -53,6 +56,17 @@ window.SHADER_FEEDBACK = {
 
       // Sample source image (straight, no transform)
       vec4 source = texture2D(tSource, vUv);
+
+      // Two-source blending
+      if (uBlend2 > 0.0) {
+        vec4 src2 = texture2D(tSource2, vUv);
+        if (uBlendMode == 0) source = mix(source, src2, uBlend2);
+        else if (uBlendMode == 1) source = source + src2 * uBlend2;
+        else if (uBlendMode == 2) source = mix(source, source * src2, uBlend2);
+        else if (uBlendMode == 3) source = mix(source, 1.0 - (1.0 - source) * (1.0 - src2), uBlend2);
+        else source = mix(source, abs(source - src2), uBlend2);
+        source.a = 1.0;
+      }
 
       // Brightness boost on feedback
       prev.rgb *= uBrightness;
