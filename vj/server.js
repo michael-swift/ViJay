@@ -145,6 +145,23 @@ function handleMessage(msg, ws) {
 
 // --- REST API ---
 
+// Auto-CoT: generate a readable description and broadcast it on screen.
+// Every mutating API call goes through this so the audience sees what's happening.
+function autoCot(text, style) {
+  broadcast({ type: 'cot', text, style: style || 'action' });
+}
+
+// Describe param changes in a compact readable way
+function describeParams(body) {
+  const parts = [];
+  if (body.intensity !== undefined) parts.push(`int:${body.intensity}`);
+  if (body.feedbackAmount !== undefined) parts.push(`fb:${body.feedbackAmount}`);
+  if (body.rotation !== undefined) parts.push(`rot:${body.rotation}`);
+  if (body.zoom !== undefined) parts.push(`zm:${body.zoom}`);
+  if (body.colorShift !== undefined) parts.push(`clr:${body.colorShift}`);
+  return parts.join(' ');
+}
+
 // Get current state
 app.get('/api/state', (req, res) => {
   res.json(state);
@@ -159,6 +176,8 @@ app.post('/api/effect', (req, res) => {
   if (rotation !== undefined) state.rotation = rotation;
   if (zoom !== undefined) state.zoom = zoom;
   if (colorShift !== undefined) state.colorShift = colorShift;
+  const params = describeParams(req.body);
+  autoCot(`fx: ${state.currentEffect}${params ? ' | ' + params : ''}`);
   broadcast({ type: 'effect', ...state });
   res.json({ ok: true, state });
 });
@@ -172,6 +191,7 @@ app.post('/api/image', (req, res) => {
     const idx = state.images.indexOf(name);
     if (idx !== -1) state.currentImageIndex = idx;
   }
+  autoCot(`img: ${state.images[state.currentImageIndex] || '?'}`);
   broadcast({ type: 'image', currentImageIndex: state.currentImageIndex, images: state.images });
   res.json({ ok: true, currentImageIndex: state.currentImageIndex });
 });
@@ -182,6 +202,7 @@ app.post('/api/transition', (req, res) => {
   if (preset && PRESETS[preset]) {
     Object.assign(state, PRESETS[preset]);
     state.preset = preset;
+    autoCot(`preset: ${preset}`);
     broadcast({ type: 'transition', preset, duration: duration || 1000, ...state });
     res.json({ ok: true, preset, state });
   } else {
@@ -204,6 +225,12 @@ app.post('/api/mode', (req, res) => {
   if (['manual', 'autonomous', 'copilot'].includes(mode)) {
     state.mode = mode;
     broadcast({ type: 'mode', mode });
+    // Start/stop autopilot based on mode
+    if (mode === 'autonomous') {
+      autopilot.start();
+    } else if (mode === 'manual') {
+      autopilot.stop();
+    }
     res.json({ ok: true, mode });
   } else {
     res.status(400).json({ error: 'Unknown mode', available: ['manual', 'autonomous', 'copilot'] });
@@ -237,6 +264,9 @@ app.post('/api/panels', (req, res) => {
     return res.status(400).json({ error: 'panels must be a non-empty array' });
   }
   state.panels = newPanels;
+  // Describe panels compactly for CoT
+  const desc = newPanels.map((p, i) => `${i}:${p.effect || '?'}/${(p.source || '?').replace(/\.(jpg|jpeg|png|mp4|webm)$/i, '').slice(0, 15)}`).join(' ');
+  autoCot(`panels [${newPanels.length}]: ${desc}`);
   broadcast({ type: 'panels', panels: newPanels });
   res.json({ ok: true, panels: newPanels });
 });
@@ -307,6 +337,8 @@ app.post('/api/layout', (req, res) => {
     effects.forEach((fx, i) => { if (fx && panels[i]) panels[i].effect = fx; });
   }
   state.panels = panels;
+  const srcs = (sources || []).map(s => (s || '').replace(/\.(jpg|jpeg|png|mp4|webm)$/i, '').slice(0, 12)).join(', ');
+  autoCot(`layout: ${name}${srcs ? ' | ' + srcs : ''}`);
   broadcast({ type: 'panels', panels });
   res.json({ ok: true, layout: name, panels });
 });
@@ -345,10 +377,221 @@ app.post('/api/layer', (req, res) => {
   res.json({ ok: true, secondImageIndex: state.secondImageIndex, layerBlend: state.layerBlend, layerMode: state.layerMode, layerLayout: state.layerLayout, fgScale: state.fgScale });
 });
 
+// --- Autopilot ---
+// Runs on boot, cycling through visual compositions with energy arcs.
+// Stops when mode is switched to 'manual', resumes on 'autonomous' or 'copilot'.
+
+const autopilot = {
+  timer: null,
+  stepIndex: 0,
+  energy: 0, // 0-1 energy level, rises and falls over time
+  energyDir: 1, // 1 = building, -1 = dropping
+  anchorSource: null, // stays consistent across transitions
+
+  start() {
+    if (this.timer) return;
+    // Pick a video as anchor if available, otherwise first image
+    const videos = state.images.filter(f => /\.(mp4|webm|mov)$/i.test(f));
+    this.anchorSource = videos.length > 0
+      ? videos[Math.floor(Math.random() * videos.length)]
+      : state.images[0] || null;
+    this.energy = 0.1;
+    this.energyDir = 1;
+    this.stepIndex = 0;
+    console.log(`[autopilot] started — anchor: ${this.anchorSource}`);
+    autoCot('autopilot engaged', 'thought');
+    this.step();
+    this.timer = setInterval(() => this.step(), 8000 + Math.random() * 7000);
+  },
+
+  stop() {
+    if (this.timer) {
+      clearInterval(this.timer);
+      this.timer = null;
+      console.log('[autopilot] stopped');
+    }
+  },
+
+  // Pick random images, excluding the anchor
+  pickSources(count) {
+    const pool = state.images.filter(f => f !== this.anchorSource);
+    const picked = [];
+    const shuffled = pool.sort(() => Math.random() - 0.5);
+    for (let i = 0; i < count && i < shuffled.length; i++) {
+      picked.push(shuffled[i]);
+    }
+    return picked;
+  },
+
+  // Pick an effect weighted by current energy
+  pickEffect() {
+    if (this.energy > 0.75) {
+      return ['glitch', 'glitch', 'noise', 'feedback'][Math.floor(Math.random() * 4)];
+    } else if (this.energy > 0.4) {
+      return ['feedback', 'glitch', 'colorshift', 'noise'][Math.floor(Math.random() * 4)];
+    } else {
+      return ['feedback', 'feedback', 'colorshift', 'noise'][Math.floor(Math.random() * 4)];
+    }
+  },
+
+  // Map energy to parameter ranges
+  params() {
+    const e = this.energy;
+    return {
+      intensity: 0.2 + e * 0.7,
+      feedbackAmount: 0.7 + e * 0.22,
+      rotation: (0.001 + e * 0.012) * (Math.random() > 0.5 ? 1 : -1),
+      zoom: 1.0 + e * 0.008,
+      colorShift: e > 0.5 ? e * 0.3 : 0,
+      brightness: 0.8 + e * 0.35,
+      sourceMix: 0.55 - e * 0.2,
+      glitch: e > 0.6 ? (e - 0.6) * 0.5 : 0,
+    };
+  },
+
+  step() {
+    if (state.mode === 'manual') {
+      this.stop();
+      return;
+    }
+
+    // Evolve energy
+    this.energy += this.energyDir * (0.08 + Math.random() * 0.12);
+    if (this.energy >= 1.0) {
+      this.energy = 1.0;
+      this.energyDir = -1; // start dropping
+    } else if (this.energy <= 0.05) {
+      this.energy = 0.1;
+      this.energyDir = 1; // start building again
+      // Pick a new anchor on each new cycle
+      const videos = state.images.filter(f => /\.(mp4|webm|mov)$/i.test(f));
+      if (videos.length > 0) {
+        this.anchorSource = videos[Math.floor(Math.random() * videos.length)];
+      }
+    }
+
+    const p = this.params();
+    const scenes = this.getScenes(p);
+    const scene = scenes[this.stepIndex % scenes.length];
+    this.stepIndex++;
+
+    state.panels = scene;
+    broadcast({ type: 'panels', panels: scene });
+
+    const desc = scene.map((pan, i) =>
+      `${i}:${pan.effect}/${(pan.source || '?').replace(/\.(jpg|jpeg|png|mp4|webm)$/i, '').slice(0, 12)}`
+    ).join(' ');
+    const energyBar = '▓'.repeat(Math.round(this.energy * 10)) + '░'.repeat(10 - Math.round(this.energy * 10));
+    autoCot(`auto [${energyBar}] ${desc}`, 'thought');
+  },
+
+  getScenes(p) {
+    const sources = this.pickSources(4);
+    const anchor = this.anchorSource;
+    const darkColors = ['#1a0a2e', '#0a1a0a', '#0f0505', '#050510', '#0a0a1a'];
+    const darkColor = 'color:' + darkColors[Math.floor(Math.random() * darkColors.length)];
+
+    return [
+      // Scene: Anchor fullscreen with gentle feedback
+      [
+        { id: 0, rect: { x: 0, y: 0, w: 1, h: 1 }, effect: 'feedback', source: anchor,
+          state: { ...p, rotation: p.rotation * 0.5, sourceMix: 0.5 } },
+      ],
+
+      // Scene: Split — anchor left, photo right
+      [
+        { id: 0, rect: { x: 0, y: 0, w: 0.5, h: 1 }, effect: 'feedback', source: anchor,
+          state: { ...p, intensity: p.intensity * 0.7, sourceMix: 0.5 } },
+        { id: 1, rect: { x: 0.5, y: 0, w: 0.5, h: 1 }, effect: this.pickEffect(), source: sources[0] || null,
+          state: p },
+      ],
+
+      // Scene: Cinema — anchor top, two photos bottom
+      [
+        { id: 0, rect: { x: 0, y: 0, w: 1, h: 0.55 }, effect: 'feedback', source: anchor,
+          state: { ...p, intensity: p.intensity * 0.6, sourceMix: 0.5 } },
+        { id: 1, rect: { x: 0, y: 0.55, w: 0.5, h: 0.45 }, effect: this.pickEffect(), source: sources[0] || null,
+          state: p },
+        { id: 2, rect: { x: 0.5, y: 0.55, w: 0.5, h: 0.45 }, effect: this.pickEffect(), source: sources[1] || darkColor,
+          state: p },
+      ],
+
+      // Scene: Spotlight — dark sides, photo center
+      [
+        { id: 0, rect: { x: 0, y: 0, w: 0.2, h: 1 }, effect: 'colorshift', source: darkColor,
+          state: { intensity: 0.3, feedbackAmount: 0.9, rotation: 0.001, brightness: 0.6, sourceMix: 0.1 } },
+        { id: 1, rect: { x: 0.2, y: 0, w: 0.6, h: 1 }, effect: this.pickEffect(), source: sources[0] || anchor,
+          state: p },
+        { id: 2, rect: { x: 0.8, y: 0, w: 0.2, h: 1 }, effect: 'colorshift', source: darkColor,
+          state: { intensity: 0.3, feedbackAmount: 0.9, rotation: -0.001, brightness: 0.6, sourceMix: 0.1 } },
+      ],
+
+      // Scene: Quad — anchor top-left, others fill
+      [
+        { id: 0, rect: { x: 0, y: 0, w: 0.4, h: 0.5 }, effect: 'feedback', source: anchor,
+          state: { ...p, intensity: p.intensity * 0.5, sourceMix: 0.5 } },
+        { id: 1, rect: { x: 0.4, y: 0, w: 0.6, h: 0.5 }, effect: this.pickEffect(), source: sources[0] || null,
+          state: p },
+        { id: 2, rect: { x: 0, y: 0.5, w: 0.5, h: 0.5 }, effect: this.pickEffect(), source: sources[1] || darkColor,
+          state: p },
+        { id: 3, rect: { x: 0.5, y: 0.5, w: 0.5, h: 0.5 }, effect: this.pickEffect(), source: sources[2] || null,
+          state: p },
+      ],
+
+      // Scene: Triptych
+      [
+        { id: 0, rect: { x: 0, y: 0, w: 0.3, h: 1 }, effect: 'feedback', source: anchor,
+          state: { ...p, intensity: p.intensity * 0.6, sourceMix: 0.5 } },
+        { id: 1, rect: { x: 0.3, y: 0, w: 0.4, h: 1 }, effect: this.pickEffect(), source: sources[0] || null,
+          state: p },
+        { id: 2, rect: { x: 0.7, y: 0, w: 0.3, h: 1 }, effect: this.pickEffect(), source: sources[1] || darkColor,
+          state: p },
+      ],
+
+      // Scene: Widescreen — big left, ambient right
+      [
+        { id: 0, rect: { x: 0, y: 0, w: 0.7, h: 1 }, effect: this.pickEffect(), source: sources[0] || anchor,
+          state: p },
+        { id: 1, rect: { x: 0.7, y: 0, w: 0.3, h: 1 }, effect: 'noise', source: darkColor,
+          state: { intensity: 0.4, feedbackAmount: 0.85, rotation: 0.002, brightness: 0.5, sourceMix: 0.15 } },
+      ],
+
+      // Scene: Full photo/video blast (high energy only gets this)
+      [
+        { id: 0, rect: { x: 0, y: 0, w: 1, h: 1 }, effect: this.pickEffect(), source: sources[0] || anchor,
+          state: { ...p, intensity: Math.min(p.intensity * 1.2, 1), glitch: p.glitch + 0.1 } },
+      ],
+    ];
+  },
+};
+
+// API to control autopilot
+app.post('/api/autopilot', (req, res) => {
+  const { action } = req.body;
+  if (action === 'start') {
+    state.mode = 'autonomous';
+    broadcast({ type: 'mode', mode: 'autonomous' });
+    autopilot.start();
+    res.json({ ok: true, status: 'started' });
+  } else if (action === 'stop') {
+    state.mode = 'manual';
+    broadcast({ type: 'mode', mode: 'manual' });
+    autopilot.stop();
+    res.json({ ok: true, status: 'stopped' });
+  } else {
+    res.status(400).json({ error: 'action must be start or stop' });
+  }
+});
+
 // --- Start ---
 server.listen(PORT, () => {
   console.log(`\n  🎛  VIJAY VJ System`);
   console.log(`  → http://localhost:${PORT}`);
   console.log(`  → Images: ${IMAGES_DIR} (${state.images.length} loaded)`);
-  console.log(`  → API: /api/state, /api/effect, /api/image, /api/transition\n`);
+  console.log(`  → API: /api/state, /api/effect, /api/image, /api/transition`);
+  console.log(`  → Autopilot: ON (mode: autonomous)\n`);
+
+  // Start autopilot on boot
+  state.mode = 'autonomous';
+  autopilot.start();
 });
