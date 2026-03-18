@@ -238,6 +238,75 @@ app.get('/api/panels', (req, res) => {
   res.json({ panels: state.panels });
 });
 
+// Preset layouts: named panel configurations.
+// POST /api/layout { name: "quad-anchor", sources: ["bob_ross.mp4", "photo.jpg", ...], anchor: "bob_ross.mp4" }
+// The layout defines the geometry, the caller fills in sources.
+const LAYOUTS = {
+  // Single fullscreen panel
+  'full': (sources) => [
+    { id: 0, rect: { x: 0, y: 0, w: 1, h: 1 }, effect: 'feedback', source: sources[0] || null }
+  ],
+  // Left/right split
+  'split': (sources) => [
+    { id: 0, rect: { x: 0, y: 0, w: 0.5, h: 1 }, effect: 'feedback', source: sources[0] || null },
+    { id: 1, rect: { x: 0.5, y: 0, w: 0.5, h: 1 }, effect: 'glitch', source: sources[1] || null },
+  ],
+  // Wide main + narrow sidebar
+  'widescreen': (sources) => [
+    { id: 0, rect: { x: 0, y: 0, w: 0.7, h: 1 }, effect: 'feedback', source: sources[0] || null },
+    { id: 1, rect: { x: 0.7, y: 0, w: 0.3, h: 1 }, effect: 'colorshift', source: sources[1] || 'color:#0a0a1a' },
+  ],
+  // Quad grid with anchor in top-left
+  'quad-anchor': (sources, anchor) => [
+    { id: 0, rect: { x: 0, y: 0, w: 0.35, h: 0.5 }, effect: 'feedback', source: anchor || sources[0] || null,
+      state: { intensity: 0.3, feedbackAmount: 0.8, rotation: 0.002, brightness: 0.95, sourceMix: 0.5 } },
+    { id: 1, rect: { x: 0.35, y: 0, w: 0.65, h: 0.5 }, effect: 'glitch', source: sources[1] || null },
+    { id: 2, rect: { x: 0, y: 0.5, w: 0.5, h: 0.5 }, effect: 'feedback', source: sources[2] || 'color:#0a0a1a' },
+    { id: 3, rect: { x: 0.5, y: 0.5, w: 0.5, h: 0.5 }, effect: 'noise', source: sources[3] || null },
+  ],
+  // Three columns
+  'triptych': (sources) => [
+    { id: 0, rect: { x: 0, y: 0, w: 0.3, h: 1 }, effect: 'feedback', source: sources[0] || null },
+    { id: 1, rect: { x: 0.3, y: 0, w: 0.4, h: 1 }, effect: 'feedback', source: sources[1] || null },
+    { id: 2, rect: { x: 0.7, y: 0, w: 0.3, h: 1 }, effect: 'glitch', source: sources[2] || null },
+  ],
+  // Big center + color washes on sides
+  'spotlight': (sources) => [
+    { id: 0, rect: { x: 0, y: 0, w: 0.2, h: 1 }, effect: 'colorshift', source: sources[1] || 'color:#1a0a2e',
+      state: { intensity: 0.3, feedbackAmount: 0.9, rotation: 0.001, brightness: 0.7, sourceMix: 0.1 } },
+    { id: 1, rect: { x: 0.2, y: 0, w: 0.6, h: 1 }, effect: 'feedback', source: sources[0] || null },
+    { id: 2, rect: { x: 0.8, y: 0, w: 0.2, h: 1 }, effect: 'colorshift', source: sources[2] || 'color:#0a1a0a',
+      state: { intensity: 0.3, feedbackAmount: 0.9, rotation: -0.001, brightness: 0.7, sourceMix: 0.1 } },
+  ],
+  // Wide video top, photos bottom split
+  'cinema': (sources, anchor) => [
+    { id: 0, rect: { x: 0, y: 0, w: 1, h: 0.55 }, effect: 'feedback', source: anchor || sources[0] || null,
+      state: { intensity: 0.35, feedbackAmount: 0.78, rotation: 0.002, brightness: 0.95, sourceMix: 0.5 } },
+    { id: 1, rect: { x: 0, y: 0.55, w: 0.5, h: 0.45 }, effect: 'glitch', source: sources[1] || null },
+    { id: 2, rect: { x: 0.5, y: 0.55, w: 0.5, h: 0.45 }, effect: 'feedback', source: sources[2] || null },
+  ],
+};
+
+app.post('/api/layout', (req, res) => {
+  const { name, sources, anchor, effects } = req.body;
+  const layoutFn = LAYOUTS[name];
+  if (!layoutFn) {
+    return res.status(400).json({ error: 'Unknown layout', available: Object.keys(LAYOUTS) });
+  }
+  const panels = layoutFn(sources || [], anchor);
+  // Optionally override effects per panel
+  if (effects && Array.isArray(effects)) {
+    effects.forEach((fx, i) => { if (fx && panels[i]) panels[i].effect = fx; });
+  }
+  state.panels = panels;
+  broadcast({ type: 'panels', panels });
+  res.json({ ok: true, layout: name, panels });
+});
+
+app.get('/api/layouts', (req, res) => {
+  res.json({ layouts: Object.keys(LAYOUTS) });
+});
+
 // Layer: set second source and blend
 app.post('/api/layer', (req, res) => {
   const { index, name, blend, mode, layout, fgPosX, fgPosY, fgScale, clear } = req.body;

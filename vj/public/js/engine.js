@@ -77,19 +77,59 @@ window.VJ = window.VJ || {};
     sourceMix: 0.5,
   };
 
+  // Transition system: panels lerp from current to target values each frame.
+  // LERP_SPEED controls how fast transitions are (higher = faster, 1.0 = instant).
+  const LERP_SPEED = 0.06; // ~0.5 second to reach target
+  const LERPABLE_KEYS = ['intensity', 'feedbackAmount', 'rotation', 'zoom', 'colorShift', 'brightness', 'glitch', 'sourceMix'];
+
   function createPanel(id, rect, effect, source) {
     const w = Math.max(1, Math.floor(window.innerWidth * rect.w));
     const h = Math.max(1, Math.floor(window.innerHeight * rect.h));
     return {
       id: id,
       rect: rect,             // { x, y, w, h } in 0-1 normalized coords
+      targetRect: { ...rect }, // lerp target for rect (smooth resize/reposition)
       effect: effect || 'feedback',
       source: source || null,  // image/video name, "color:#hex", or null (= use current image)
       sourceIndex: -1,         // resolved index, -1 = use source string
       rtA: new THREE.WebGLRenderTarget(w, h, rtParams),
       rtB: new THREE.WebGLRenderTarget(w, h, rtParams),
       state: { ...DEFAULT_PANEL_STATE },
+      targetState: null,       // when set, state lerps toward this each frame
     };
+  }
+
+  // Lerp panel state + rect toward targets each frame
+  function lerpPanels() {
+    for (const panel of panels) {
+      // Lerp state params
+      if (panel.targetState) {
+        let done = true;
+        for (const key of LERPABLE_KEYS) {
+          if (panel.targetState[key] !== undefined) {
+            const diff = panel.targetState[key] - panel.state[key];
+            if (Math.abs(diff) > 0.0001) {
+              panel.state[key] += diff * LERP_SPEED;
+              done = false;
+            } else {
+              panel.state[key] = panel.targetState[key];
+            }
+          }
+        }
+        if (done) panel.targetState = null;
+      }
+      // Lerp rect (smooth panel resize/move)
+      if (panel.targetRect) {
+        for (const key of ['x', 'y', 'w', 'h']) {
+          const diff = panel.targetRect[key] - panel.rect[key];
+          if (Math.abs(diff) > 0.001) {
+            panel.rect[key] += diff * LERP_SPEED;
+          } else {
+            panel.rect[key] = panel.targetRect[key];
+          }
+        }
+      }
+    }
   }
 
   function destroyPanel(panel) {
@@ -210,12 +250,34 @@ window.VJ = window.VJ || {};
   });
 
   function applyPanelConfig(configs) {
-    // Destroy old panels
-    panels.forEach(destroyPanel);
-    // Create new ones
-    panels = configs.map((cfg, i) => {
+    // Build a map of existing panels by ID for reuse
+    const oldById = {};
+    panels.forEach(p => { oldById[p.id] = p; });
+
+    const newPanels = configs.map((cfg, i) => {
+      const id = cfg.id !== undefined ? cfg.id : i;
+      const existing = oldById[id];
+
+      if (existing) {
+        // Panel with this ID already exists — lerp to new values instead of recreating.
+        // This preserves the feedback buffer (no visual reset) and smoothly transitions.
+        delete oldById[id]; // mark as reused
+
+        // Update source + effect immediately (can't lerp these)
+        if (cfg.effect) existing.effect = cfg.effect;
+        if (cfg.source !== undefined) existing.source = cfg.source;
+        if (cfg.sourceIndex !== undefined) existing.sourceIndex = cfg.sourceIndex;
+
+        // Set lerp targets for rect and state
+        if (cfg.rect) existing.targetRect = { ...cfg.rect };
+        if (cfg.state) existing.targetState = { ...cfg.state };
+
+        return existing;
+      }
+
+      // New panel — create fresh
       const p = createPanel(
-        cfg.id !== undefined ? cfg.id : i,
+        id,
         cfg.rect || { x: 0, y: 0, w: 1, h: 1 },
         cfg.effect,
         cfg.source
@@ -224,8 +286,13 @@ window.VJ = window.VJ || {};
       if (cfg.state) Object.assign(p.state, cfg.state);
       return p;
     });
+
+    // Destroy old panels that weren't reused
+    Object.values(oldById).forEach(destroyPanel);
+
+    panels = newPanels;
     activePanel = Math.min(activePanel, panels.length - 1);
-    console.log('[engine] panels updated:', panels.length);
+    console.log('[engine] panels updated:', panels.length, '(reused:', configs.length - Object.keys(oldById).length, ')');
   }
 
   // --- Keyboard controls ---
@@ -420,6 +487,7 @@ window.VJ = window.VJ || {};
     VJ.audio.update();
     reportAudio(now);
     autonomousTick(dt);
+    lerpPanels();
 
     // Flash decay (global)
     state.flash *= 0.85;

@@ -44,6 +44,9 @@ VJ.effects = (function() {
     if (window.SHADER_KALEIDOSCOPE) register(window.SHADER_KALEIDOSCOPE);
     if (window.SHADER_COLORSHIFT) register(window.SHADER_COLORSHIFT);
     if (window.SHADER_NOISE) register(window.SHADER_NOISE);
+    if (window.SHADER_VHS) register(window.SHADER_VHS);
+    if (window.SHADER_PIXELATE) register(window.SHADER_PIXELATE);
+    if (window.SHADER_MIRROR) register(window.SHADER_MIRROR);
 
     console.log('[effects] registered:', Object.keys(shaderDefs).join(', '));
   }
