@@ -220,6 +220,14 @@ app.get('/api/audio', (req, res) => {
   res.json(audio);
 });
 
+// Chain of Thought: send text to the on-screen overlay
+// Body: { text: "string", style: "thought"|"action"|"default" }
+//   or: { lines: [{ text: "...", style: "..." }, ...] }
+app.post('/api/cot', (req, res) => {
+  broadcast({ type: 'cot', ...req.body });
+  res.json({ ok: true });
+});
+
 // Panels: set multi-panel layout
 // Body: { panels: [{ id, rect:{x,y,w,h}, effect, source, sourceIndex, state:{...} }, ...] }
 // source can be: image/video filename, "color:#rrggbb", or null (use current image)

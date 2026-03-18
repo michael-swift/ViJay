@@ -23,9 +23,57 @@
     #hud .label { color: #888; }
     #hud .value { color: #0f0; }
     #hud .hot { color: #f00; }
+
+    /* Agent CoT overlay — bottom-right rolling log */
+    #cot {
+      position: fixed;
+      bottom: 16px;
+      right: 16px;
+      width: 420px;
+      max-height: 40vh;
+      color: #0f0;
+      font: 13px/1.5 'Courier New', monospace;
+      pointer-events: none;
+      z-index: 10;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-end;
+    }
+    #cot .line {
+      opacity: 0;
+      animation: cotFadeIn 0.3s ease forwards;
+      white-space: pre-wrap;
+      word-break: break-word;
+      padding: 2px 0;
+      text-shadow: 0 0 6px #0f0, 0 0 12px rgba(0,255,0,0.3);
+    }
+    #cot .line.thinking {
+      color: #888;
+      font-style: italic;
+    }
+    #cot .line.action {
+      color: #0ff;
+      text-shadow: 0 0 6px #0ff, 0 0 12px rgba(0,255,255,0.3);
+    }
+    #cot .line.fading {
+      animation: cotFadeOut 2s ease forwards;
+    }
+    #cot .prefix {
+      color: #555;
+    }
+    @keyframes cotFadeIn {
+      from { opacity: 0; transform: translateY(8px); }
+      to { opacity: 0.9; transform: translateY(0); }
+    }
+    @keyframes cotFadeOut {
+      from { opacity: 0.9; }
+      to { opacity: 0; }
+    }
   </style>
 </head>
 <body>
+  <div id="cot"></div>
   <div id="hud">
     <div>VIJAY <span class="label">v1</span></div>
     <div><span class="label">FX:</span> <span id="hud-effect" class="value">feedback</span></div>
@@ -59,6 +107,7 @@
   <script src="js/audio.js"></script>
   <script src="js/camera.js"></script>
   <script src="js/effects.js"></script>
+  <script src="js/cot.js"></script>
   <script src="js/engine.js"></script>
 </body>
 </html>
