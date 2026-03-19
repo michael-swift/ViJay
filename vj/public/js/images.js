@@ -132,6 +132,12 @@ VJ.images = (function() {
     updateVideoPlayback();
   }
 
+  function getSlotIndex(slot) {
+    if (imageList.length === 0) return 0;
+    const step = Math.max(1, Math.floor(imageList.length / 4));
+    return (slot * step) % imageList.length;
+  }
+
   function getSecondTexture() {
     if (secondIndex < 0 || imageList.length === 0) return null;
     const filename = imageList[secondIndex];
@@ -201,5 +207,5 @@ VJ.images = (function() {
     return imageList;
   }
 
-  return { init, setImageList, setCurrentIndex, getCurrentTexture, nextImage, prevImage, getCurrentName, getCount, selectSlot, getSecondTexture, getSecondName, setSecondIndex, nextSecond, prevSecond, clearSecond, hasSecond, getTextureByIndex, getNameByIndex, getIndexByName, getList, ensurePlaying };
+  return { init, setImageList, setCurrentIndex, getCurrentTexture, nextImage, prevImage, getCurrentName, getCount, selectSlot, getSlotIndex, getSecondTexture, getSecondName, setSecondIndex, nextSecond, prevSecond, clearSecond, hasSecond, getTextureByIndex, getNameByIndex, getIndexByName, getList, ensurePlaying };
 })();

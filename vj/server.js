@@ -26,6 +26,7 @@ const audio = {
 };
 
 // --- State ---
+// Server is the single source of truth. Browser renders from server-broadcast state.
 const state = {
   currentEffect: 'feedback',
   intensity: 0.5,
@@ -36,19 +37,13 @@ const state = {
   images: [],
   currentImageIndex: 0,
   mode: 'manual', // manual | autonomous | copilot
-  secondImageIndex: -1, // -1 = no layer, >= 0 = overlay this source
-  layerBlend: 0.8,
-  layerMode: 0, // 0=mix, 1=add, 2=multiply, 3=screen, 4=diff
-  layerLayout: 1, // 0=fullscreen, 1=inset, 2=side-by-side, 3=pip
-  fgPosX: 0.5,
-  fgPosY: 0.5,
-  fgScale: 0.5,
   preset: null,
   panels: [
     { id: 0, rect: { x: 0, y: 0, w: 1, h: 1 }, effect: 'feedback', source: null }
   ],
-  cameraEnabled: false,
-  cameraBlend: 0.0, // 0 = all folder image, 1 = all camera
+  flash: 0,        // strobe flash (0-1, client decays)
+  blackout: false,  // blackout toggle
+  activePanel: 0,   // which panel keyboard controls target
 };
 
 // Presets: bundled parameter sets
@@ -210,13 +205,51 @@ app.post('/api/transition', (req, res) => {
   }
 });
 
-// Camera control
-app.post('/api/camera', (req, res) => {
-  const { enabled, blend } = req.body;
-  if (enabled !== undefined) state.cameraEnabled = enabled;
-  if (blend !== undefined) state.cameraBlend = Math.max(0, Math.min(1, blend));
-  broadcast({ type: 'camera', cameraEnabled: state.cameraEnabled, cameraBlend: state.cameraBlend });
-  res.json({ ok: true, cameraEnabled: state.cameraEnabled, cameraBlend: state.cameraBlend });
+// Flash (strobe)
+app.post('/api/flash', (req, res) => {
+  state.flash = 1.0;
+  autoCot('flash');
+  broadcast({ type: 'flash', flash: state.flash });
+  res.json({ ok: true });
+});
+
+// Blackout toggle
+app.post('/api/blackout', (req, res) => {
+  const { enabled } = req.body;
+  state.blackout = enabled !== undefined ? enabled : !state.blackout;
+  autoCot(state.blackout ? 'blackout ON' : 'blackout OFF');
+  broadcast({ type: 'blackout', blackout: state.blackout });
+  res.json({ ok: true, blackout: state.blackout });
+});
+
+// Update a specific panel's state (for keyboard controls)
+// PATCH /api/panel/:id { effect, state: { intensity, rotation, ... } }
+app.patch('/api/panel/:id', (req, res) => {
+  const id = parseInt(req.params.id);
+  const panel = state.panels.find(p => p.id === id);
+  if (!panel) return res.status(404).json({ error: 'Panel not found' });
+  if (req.body.effect) panel.effect = req.body.effect;
+  if (req.body.source !== undefined) panel.source = req.body.source;
+  if (req.body.source2 !== undefined) panel.source2 = req.body.source2;
+  if (req.body.state) {
+    if (!panel.state) panel.state = {};
+    Object.assign(panel.state, req.body.state);
+  }
+  broadcast({ type: 'panels', panels: state.panels });
+  res.json({ ok: true, panel });
+});
+
+// Active panel (which panel keyboard targets)
+app.post('/api/active-panel', (req, res) => {
+  const { id } = req.body;
+  if (id !== undefined) {
+    state.activePanel = Math.max(0, Math.min(state.panels.length - 1, id));
+  } else {
+    // Cycle to next panel
+    state.activePanel = (state.activePanel + 1) % state.panels.length;
+  }
+  broadcast({ type: 'activePanel', activePanel: state.activePanel });
+  res.json({ ok: true, activePanel: state.activePanel });
 });
 
 // Mode
@@ -347,35 +380,7 @@ app.get('/api/layouts', (req, res) => {
   res.json({ layouts: Object.keys(LAYOUTS) });
 });
 
-// Layer: set second source and blend
-app.post('/api/layer', (req, res) => {
-  const { index, name, blend, mode, layout, fgPosX, fgPosY, fgScale, clear } = req.body;
-  if (clear) {
-    state.secondImageIndex = -1;
-  } else if (index !== undefined) {
-    state.secondImageIndex = Math.max(-1, Math.min(state.images.length - 1, index));
-  } else if (name) {
-    const idx = state.images.indexOf(name);
-    if (idx !== -1) state.secondImageIndex = idx;
-  }
-  if (blend !== undefined) state.layerBlend = Math.max(0, Math.min(1, blend));
-  if (mode !== undefined) state.layerMode = Math.max(0, Math.min(4, mode));
-  if (layout !== undefined) state.layerLayout = Math.max(0, Math.min(3, layout));
-  if (fgPosX !== undefined) state.fgPosX = fgPosX;
-  if (fgPosY !== undefined) state.fgPosY = fgPosY;
-  if (fgScale !== undefined) state.fgScale = Math.max(0.1, Math.min(1.0, fgScale));
-  broadcast({
-    type: 'layer',
-    secondImageIndex: state.secondImageIndex,
-    layerBlend: state.layerBlend,
-    layerMode: state.layerMode,
-    layerLayout: state.layerLayout,
-    fgPosX: state.fgPosX,
-    fgPosY: state.fgPosY,
-    fgScale: state.fgScale,
-  });
-  res.json({ ok: true, secondImageIndex: state.secondImageIndex, layerBlend: state.layerBlend, layerMode: state.layerMode, layerLayout: state.layerLayout, fgScale: state.fgScale });
-});
+// (Layer API removed — use per-panel source2/blend2 via /api/panels instead)
 
 // --- Autopilot ---
 // Runs on boot, cycling through visual compositions with energy arcs.

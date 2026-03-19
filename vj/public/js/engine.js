@@ -344,7 +344,36 @@ window.VJ = window.VJ || {};
   }
 
   // --- Keyboard controls ---
-  // All param changes target the active panel. Global stuff (flash, blackout, mode) is shared.
+  // All changes go through the server so state stays in sync.
+  // We apply locally too for instant visual feedback (optimistic update).
+  function serverPost(path, body) {
+    fetch(path, {
+      method: path.includes('PATCH') ? 'PATCH' : 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }).catch(err => console.error('[engine] server sync failed:', err));
+  }
+  function serverPatch(path, body) {
+    fetch(path, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    }).catch(err => console.error('[engine] server sync failed:', err));
+  }
+
+  // Debounce panel state updates to avoid flooding the server
+  let panelSyncTimer = null;
+  function syncPanelState(panel) {
+    if (panelSyncTimer) clearTimeout(panelSyncTimer);
+    panelSyncTimer = setTimeout(() => {
+      serverPatch(`/api/panel/${panel.id}`, {
+        effect: panel.effect,
+        state: panel.state,
+      });
+      panelSyncTimer = null;
+    }, 50);
+  }
+
   document.addEventListener('keydown', (e) => {
     ensureAudio();
     const key = e.key;
@@ -353,7 +382,8 @@ window.VJ = window.VJ || {};
 
     // 0: cycle active panel
     if (key === '0') {
-      activePanel = (activePanel + 1) % panels.length;
+      serverPost('/api/active-panel', {});
+      activePanel = (activePanel + 1) % panels.length; // optimistic
       console.log('[engine] active panel:', activePanel);
       return;
     }
@@ -362,7 +392,10 @@ window.VJ = window.VJ || {};
     if (key >= '1' && key <= '9') {
       const names = VJ.effects.getEffectNames();
       const idx = parseInt(key) - 1;
-      if (idx < names.length) p.effect = names[idx];
+      if (idx < names.length) {
+        p.effect = names[idx]; // optimistic
+        serverPatch(`/api/panel/${p.id}`, { effect: names[idx] });
+      }
       return;
     }
 
@@ -372,33 +405,43 @@ window.VJ = window.VJ || {};
         VJ.audio.triggerBeat();
         break;
 
-      case 'q': VJ.images.selectSlot(0); break;
-      case 'w': VJ.images.selectSlot(1); break;
-      case 'e': VJ.images.selectSlot(2); break;
-      case 'r': VJ.images.selectSlot(3); break;
+      case 'q': VJ.images.selectSlot(0); serverPost('/api/image', { index: VJ.images.getSlotIndex(0) }); break;
+      case 'w': VJ.images.selectSlot(1); serverPost('/api/image', { index: VJ.images.getSlotIndex(1) }); break;
+      case 'e': VJ.images.selectSlot(2); serverPost('/api/image', { index: VJ.images.getSlotIndex(2) }); break;
+      case 'r': VJ.images.selectSlot(3); serverPost('/api/image', { index: VJ.images.getSlotIndex(3) }); break;
 
       case '=': case '+':
-        ps.feedbackAmount = Math.min(0.99, ps.feedbackAmount + 0.02); break;
+        ps.feedbackAmount = Math.min(0.99, ps.feedbackAmount + 0.02);
+        syncPanelState(p); break;
       case '-':
-        ps.feedbackAmount = Math.max(0.0, ps.feedbackAmount - 0.02); break;
+        ps.feedbackAmount = Math.max(0.0, ps.feedbackAmount - 0.02);
+        syncPanelState(p); break;
 
-      case '[': ps.intensity = Math.max(0, ps.intensity - 0.05); break;
-      case ']': ps.intensity = Math.min(1, ps.intensity + 0.05); break;
+      case '[': ps.intensity = Math.max(0, ps.intensity - 0.05); syncPanelState(p); break;
+      case ']': ps.intensity = Math.min(1, ps.intensity + 0.05); syncPanelState(p); break;
 
-      case 'a': Object.assign(ps, COLOR_PRESETS.warm); break;
-      case 's': Object.assign(ps, COLOR_PRESETS.cold); break;
-      case 'd': Object.assign(ps, COLOR_PRESETS.neon); break;
-      case 'f': Object.assign(ps, COLOR_PRESETS.void); break;
+      case 'a': Object.assign(ps, COLOR_PRESETS.warm); syncPanelState(p); break;
+      case 's': Object.assign(ps, COLOR_PRESETS.cold); syncPanelState(p); break;
+      case 'd': Object.assign(ps, COLOR_PRESETS.neon); syncPanelState(p); break;
+      case 'f': Object.assign(ps, COLOR_PRESETS.void); syncPanelState(p); break;
 
       case 'Tab':
         e.preventDefault();
         const modes = ['manual', 'autonomous', 'copilot'];
         const mIdx = modes.indexOf(state.mode);
-        state.mode = modes[(mIdx + 1) % modes.length];
+        const newMode = modes[(mIdx + 1) % modes.length];
+        state.mode = newMode; // optimistic
+        serverPost('/api/mode', { mode: newMode });
         break;
 
-      case 'Escape': state.blackout = !state.blackout; break;
-      case 'b': state.flash = 1.0; break;
+      case 'Escape':
+        serverPost('/api/blackout', { enabled: !state.blackout });
+        state.blackout = !state.blackout; // optimistic
+        break;
+      case 'b':
+        state.flash = 1.0; // optimistic
+        serverPost('/api/flash', {});
+        break;
 
       case 'c':
         VJ.camera.toggle();
@@ -406,11 +449,22 @@ window.VJ = window.VJ || {};
 
       case 'h': state.hudVisible = !state.hudVisible; break;
 
-      case 'ArrowLeft': ps.rotation -= 0.001; break;
-      case 'ArrowRight': ps.rotation += 0.001; break;
-      case 'ArrowUp': ps.zoom += 0.001; break;
-      case 'ArrowDown': ps.zoom = Math.max(0.99, ps.zoom - 0.001); break;
+      case 'ArrowLeft': ps.rotation -= 0.001; syncPanelState(p); break;
+      case 'ArrowRight': ps.rotation += 0.001; syncPanelState(p); break;
+      case 'ArrowUp': ps.zoom += 0.001; syncPanelState(p); break;
+      case 'ArrowDown': ps.zoom = Math.max(0.99, ps.zoom - 0.001); syncPanelState(p); break;
     }
+  });
+
+  // Handle server-broadcast state for flash/blackout/activePanel
+  VJ.connection.on('flash', (msg) => {
+    state.flash = msg.flash || 1.0;
+  });
+  VJ.connection.on('blackout', (msg) => {
+    state.blackout = msg.blackout;
+  });
+  VJ.connection.on('activePanel', (msg) => {
+    activePanel = msg.activePanel;
   });
 
   // --- Resize ---
@@ -470,56 +524,7 @@ window.VJ = window.VJ || {};
     });
   }
 
-  // --- Autonomous behavior (targets active panel) ---
-  let autoTimer = 0, autoImageTimer = 0, autoEffectTimer = 0;
-  let driftTarget = { rotation: 0.002, zoom: 1.002, colorShift: 0 };
-
-  function autonomousTick(dt) {
-    if (state.mode === 'manual') return;
-    const ps = ap().state;
-    const beat = VJ.audio.getBeat();
-    const overall = VJ.audio.getOverall();
-    const high = VJ.audio.getHigh();
-    autoTimer += dt;
-
-    if (beat > 0.8 && state.flash < 0.1) state.flash = 0.6 + beat * 0.4;
-
-    if (state.mode === 'autonomous') {
-      if (autoTimer > 3.0) {
-        autoTimer = 0;
-        driftTarget.rotation = ps.rotation + (Math.random() - 0.5) * 0.004 * (1 + overall);
-        driftTarget.zoom = 1.0 + Math.random() * 0.008;
-        driftTarget.colorShift = ps.colorShift + (Math.random() - 0.5) * 0.1 * high;
-      }
-      ps.rotation += (driftTarget.rotation - ps.rotation) * 0.02;
-      ps.zoom += (driftTarget.zoom - ps.zoom) * 0.02;
-      ps.colorShift += (driftTarget.colorShift - ps.colorShift) * 0.02;
-      ps.feedbackAmount += (Math.min(0.95, 0.7 + overall * 0.25) - ps.feedbackAmount) * 0.05;
-      ps.intensity += (Math.min(0.9, 0.3 + (high + VJ.audio.getMid()) * 0.3) - ps.intensity) * 0.05;
-
-      if (beat > 0.9) ps.glitch = 0.3;
-      else ps.glitch = (ps.glitch || 0) * 0.92;
-
-      autoImageTimer += dt;
-      if (autoImageTimer > 8.0 && overall > 0.4) { autoImageTimer = 0; VJ.images.nextImage(); }
-      autoEffectTimer += dt;
-      if (autoEffectTimer > 20.0 + Math.random() * 10) {
-        autoEffectTimer = 0;
-        const names = VJ.effects.getEffectNames();
-        ap().effect = names[Math.floor(Math.random() * names.length)];
-      }
-    }
-
-    if (state.mode === 'copilot') {
-      if (autoTimer > 5.0) {
-        autoTimer = 0;
-        driftTarget.rotation = ps.rotation + (Math.random() - 0.5) * 0.002;
-        driftTarget.zoom = 1.0 + Math.random() * 0.004;
-      }
-      ps.rotation += (driftTarget.rotation - ps.rotation) * 0.01;
-      ps.zoom += (driftTarget.zoom - ps.zoom) * 0.01;
-    }
-  }
+  // (Autonomous behavior removed — server-side autopilot handles this via /api/autopilot)
 
   // --- Render loop ---
   let time = 0;
@@ -534,7 +539,6 @@ window.VJ = window.VJ || {};
 
     VJ.audio.update();
     reportAudio(now);
-    autonomousTick(dt);
     lerpPanels();
 
     // Flash decay (global)
