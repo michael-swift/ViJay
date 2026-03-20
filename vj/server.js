@@ -275,31 +275,24 @@ app.post('/api/blackout', (req, res) => {
 
 // Update a specific panel's state (for keyboard controls)
 // PATCH /api/panel/:id { effect, state: { intensity, rotation, ... } }
+// Merges incoming fields into the existing panel, then sanitizes the whole thing.
 app.patch('/api/panel/:id', (req, res) => {
   const id = parseInt(req.params.id);
   if (isNaN(id)) return res.status(400).json({ error: 'Invalid panel id' });
-  const panel = state.panels.find(p => p.id === id);
-  if (!panel) return res.status(404).json({ error: 'Panel not found' });
-  if (req.body.effect && VALID_EFFECTS.includes(req.body.effect)) panel.effect = req.body.effect;
-  if (typeof req.body.source === 'string' || req.body.source === null) panel.source = req.body.source;
-  if (typeof req.body.source2 === 'string' || req.body.source2 === null) panel.source2 = req.body.source2;
-  if (req.body.state && typeof req.body.state === 'object') {
-    if (!panel.state) panel.state = {};
-    // Clamp incoming state values
-    const s = req.body.state;
-    if (s.intensity !== undefined) panel.state.intensity = clampNum(s.intensity, 0, 1, panel.state.intensity);
-    if (s.feedbackAmount !== undefined) panel.state.feedbackAmount = clampNum(s.feedbackAmount, 0, 0.99, panel.state.feedbackAmount);
-    if (s.rotation !== undefined) panel.state.rotation = clampNum(s.rotation, -0.1, 0.1, panel.state.rotation);
-    if (s.zoom !== undefined) panel.state.zoom = clampNum(s.zoom, 0.9, 1.1, panel.state.zoom);
-    if (s.colorShift !== undefined) panel.state.colorShift = clampNum(s.colorShift, 0, 1, panel.state.colorShift);
-    if (s.brightness !== undefined) panel.state.brightness = clampNum(s.brightness, 0, 2, panel.state.brightness);
-    if (s.glitch !== undefined) panel.state.glitch = clampNum(s.glitch, 0, 1, panel.state.glitch);
-    if (s.sourceMix !== undefined) panel.state.sourceMix = clampNum(s.sourceMix, 0, 1, panel.state.sourceMix);
-    if (s.blend2 !== undefined) panel.state.blend2 = clampNum(s.blend2, 0, 1, panel.state.blend2);
-    if (s.blendMode !== undefined) panel.state.blendMode = clampNum(s.blendMode, 0, 4, panel.state.blendMode);
-  }
+  const idx = state.panels.findIndex(p => p.id === id);
+  if (idx === -1) return res.status(404).json({ error: 'Panel not found' });
+  const existing = state.panels[idx];
+  // Merge incoming fields over existing panel, then sanitize
+  const merged = {
+    ...existing,
+    ...req.body,
+    id: existing.id, // don't allow id change
+    rect: existing.rect, // don't allow rect change via PATCH
+    state: { ...(existing.state || {}), ...(req.body.state || {}) },
+  };
+  state.panels[idx] = sanitizePanel(merged, idx);
   broadcast({ type: 'panels', panels: state.panels });
-  res.json({ ok: true, panel });
+  res.json({ ok: true, panel: state.panels[idx] });
 });
 
 // Active panel (which panel keyboard targets)

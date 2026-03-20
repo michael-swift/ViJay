@@ -4,7 +4,8 @@
   "description": "Agentic live VJ system",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "test": "node --test test/api.test.js"
   },
   "dependencies": {
     "chokidar": "^3.5.3",
