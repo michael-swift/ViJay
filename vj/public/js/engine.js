@@ -140,6 +140,15 @@ window.VJ = window.VJ || {};
             panel.rect[key] = panel.targetRect[key];
           }
         }
+        // Resize render targets when panel dimensions change significantly
+        const newW = Math.max(1, Math.floor(window.innerWidth * panel.rect.w));
+        const newH = Math.max(1, Math.floor(window.innerHeight * panel.rect.h));
+        const curW = panel.rtA.width;
+        const curH = panel.rtA.height;
+        if (Math.abs(newW - curW) > curW * 0.1 || Math.abs(newH - curH) > curH * 0.1) {
+          panel.rtA.setSize(newW, newH);
+          panel.rtB.setSize(newW, newH);
+        }
       }
     }
     // Remove fully faded-out dying panels
@@ -229,6 +238,16 @@ window.VJ = window.VJ || {};
   // --- WebSocket handlers ---
   // These target panel 0 for backward compat with the existing API.
   VJ.connection.on('state', (msg) => {
+    // Full state hydration on connect — sync everything from server
+    if (msg.images) VJ.images.setImageList(msg.images);
+    if (msg.currentImageIndex !== undefined) VJ.images.setCurrentIndex(msg.currentImageIndex);
+    if (msg.mode) state.mode = msg.mode;
+    if (msg.flash !== undefined) state.flash = msg.flash;
+    if (msg.blackout !== undefined) state.blackout = msg.blackout;
+    if (msg.activePanel !== undefined) activePanel = msg.activePanel;
+    // Apply panels if sent (full layout from server)
+    if (msg.panels) applyPanelConfig(msg.panels);
+    // Legacy single-panel state (for backward compat with old server state)
     const p = panels[0];
     if (msg.currentEffect && p) p.effect = msg.currentEffect;
     if (p && p.state) {
@@ -238,11 +257,6 @@ window.VJ = window.VJ || {};
       if (msg.zoom !== undefined) p.state.zoom = msg.zoom;
       if (msg.colorShift !== undefined) p.state.colorShift = msg.colorShift;
     }
-    if (msg.images) VJ.images.setImageList(msg.images);
-    if (msg.currentImageIndex !== undefined) VJ.images.setCurrentIndex(msg.currentImageIndex);
-    if (msg.mode) state.mode = msg.mode;
-    // Apply panels if sent
-    if (msg.panels) applyPanelConfig(msg.panels);
   });
 
   VJ.connection.on('effect', (msg) => {
@@ -263,6 +277,10 @@ window.VJ = window.VJ || {};
 
   VJ.connection.on('images', (msg) => {
     if (msg.images) VJ.images.setImageList(msg.images);
+  });
+
+  VJ.connection.on('imageChanged', (msg) => {
+    if (msg.filename) VJ.images.reloadTexture(msg.filename);
   });
 
   VJ.connection.on('transition', (msg) => {
@@ -443,9 +461,7 @@ window.VJ = window.VJ || {};
         serverPost('/api/flash', {});
         break;
 
-      case 'c':
-        VJ.camera.toggle();
-        break;
+      // Camera not yet wired to panel render path — C key reserved for future use
 
       case 'h': state.hudVisible = !state.hudVisible; break;
 

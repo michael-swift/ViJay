@@ -207,5 +207,47 @@ VJ.images = (function() {
     return imageList;
   }
 
-  return { init, setImageList, setCurrentIndex, getCurrentTexture, nextImage, prevImage, getCurrentName, getCount, selectSlot, getSlotIndex, getSecondTexture, getSecondName, setSecondIndex, nextSecond, prevSecond, clearSecond, hasSecond, getTextureByIndex, getNameByIndex, getIndexByName, getList, ensurePlaying };
+  // Bust cache and reload a changed file
+  function reloadTexture(filename) {
+    if (textures[filename]) {
+      textures[filename].dispose();
+      delete textures[filename];
+    }
+    if (videos[filename]) {
+      videos[filename].pause();
+      videos[filename].src = '';
+      // Remove the old <video> element from the DOM to prevent leaks
+      if (videos[filename].parentNode) videos[filename].parentNode.removeChild(videos[filename]);
+      delete videos[filename];
+    }
+    // Re-add with cache-bust query param
+    if (isVideo(filename)) {
+      const video = document.createElement('video');
+      video.src = `/images/${filename}?t=${Date.now()}`;
+      video.loop = true;
+      video.muted = true;
+      video.playsInline = true;
+      video.crossOrigin = 'anonymous';
+      video.preload = 'auto';
+      video.style.display = 'none';
+      document.body.appendChild(video);
+      const tex = new THREE.VideoTexture(video);
+      tex.minFilter = THREE.LinearFilter;
+      tex.magFilter = THREE.LinearFilter;
+      videos[filename] = video;
+      textures[filename] = tex;
+    } else {
+      const tex = loader.load(`/images/${filename}?t=${Date.now()}`, () => {
+        console.log(`[images] reloaded: ${filename}`);
+      });
+      tex.minFilter = THREE.LinearFilter;
+      tex.magFilter = THREE.LinearFilter;
+      tex.wrapS = THREE.ClampToEdgeWrapping;
+      tex.wrapT = THREE.ClampToEdgeWrapping;
+      textures[filename] = tex;
+    }
+    updateVideoPlayback();
+  }
+
+  return { init, setImageList, setCurrentIndex, getCurrentTexture, nextImage, prevImage, getCurrentName, getCount, selectSlot, getSlotIndex, getSecondTexture, getSecondName, setSecondIndex, nextSecond, prevSecond, clearSecond, hasSecond, getTextureByIndex, getNameByIndex, getIndexByName, getList, ensurePlaying, reloadTexture };
 })();

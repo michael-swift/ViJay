@@ -85,6 +85,15 @@ watcher.on('add', (filePath) => {
   }
 });
 
+// File overwritten in place — tell browsers to bust their texture cache
+watcher.on('change', (filePath) => {
+  const filename = path.basename(filePath);
+  if (/\.(jpg|jpeg|png|gif|webp|bmp|mp4|webm|mov)$/i.test(filename)) {
+    console.log(`[images] changed: ${filename} — notifying clients to reload`);
+    broadcast({ type: 'imageChanged', filename });
+  }
+});
+
 watcher.on('unlink', (filePath) => {
   const filename = path.basename(filePath);
   const idx = state.images.indexOf(filename);
@@ -140,6 +149,47 @@ function handleMessage(msg, ws) {
 
 // --- REST API ---
 
+// Valid effect names
+const VALID_EFFECTS = ['feedback', 'glitch', 'colorshift', 'noise', 'kaleidoscope', 'vhs', 'pixelate', 'mirror'];
+
+// Clamp a number to a range, returning defaultVal if input is not a number
+function clampNum(val, min, max, defaultVal) {
+  if (typeof val !== 'number' || isNaN(val)) return defaultVal;
+  return Math.max(min, Math.min(max, val));
+}
+
+// Validate and sanitize a panel config object
+function sanitizePanel(p, idx) {
+  const panel = {
+    id: typeof p.id === 'number' ? p.id : idx,
+    rect: {
+      x: clampNum(p.rect && p.rect.x, 0, 1, 0),
+      y: clampNum(p.rect && p.rect.y, 0, 1, 0),
+      w: clampNum(p.rect && p.rect.w, 0.01, 1, 1),
+      h: clampNum(p.rect && p.rect.h, 0.01, 1, 1),
+    },
+    effect: VALID_EFFECTS.includes(p.effect) ? p.effect : 'feedback',
+    source: (typeof p.source === 'string' || p.source === null) ? p.source : null,
+  };
+  if (typeof p.source2 === 'string' || p.source2 === null) panel.source2 = p.source2;
+  if (p.sourceIndex !== undefined) panel.sourceIndex = clampNum(p.sourceIndex, -1, 999, -1);
+  if (p.state && typeof p.state === 'object') {
+    panel.state = {};
+    if (p.state.intensity !== undefined) panel.state.intensity = clampNum(p.state.intensity, 0, 1, 0.5);
+    if (p.state.feedbackAmount !== undefined) panel.state.feedbackAmount = clampNum(p.state.feedbackAmount, 0, 0.99, 0.85);
+    if (p.state.rotation !== undefined) panel.state.rotation = clampNum(p.state.rotation, -0.1, 0.1, 0.002);
+    if (p.state.zoom !== undefined) panel.state.zoom = clampNum(p.state.zoom, 0.9, 1.1, 1.002);
+    if (p.state.colorShift !== undefined) panel.state.colorShift = clampNum(p.state.colorShift, 0, 1, 0);
+    if (p.state.brightness !== undefined) panel.state.brightness = clampNum(p.state.brightness, 0, 2, 1.05);
+    if (p.state.glitch !== undefined) panel.state.glitch = clampNum(p.state.glitch, 0, 1, 0);
+    if (p.state.sourceMix !== undefined) panel.state.sourceMix = clampNum(p.state.sourceMix, 0, 1, 0.5);
+    if (p.state.blend2 !== undefined) panel.state.blend2 = clampNum(p.state.blend2, 0, 1, 0);
+    if (p.state.blendMode !== undefined) panel.state.blendMode = clampNum(p.state.blendMode, 0, 4, 0);
+    if (p.state.opacity !== undefined) panel.state.opacity = clampNum(p.state.opacity, 0, 1, 1);
+  }
+  return panel;
+}
+
 // Auto-CoT: generate a readable description and broadcast it on screen.
 // Every mutating API call goes through this so the audience sees what's happening.
 function autoCot(text, style) {
@@ -165,12 +215,12 @@ app.get('/api/state', (req, res) => {
 // Set effect
 app.post('/api/effect', (req, res) => {
   const { name, intensity, feedbackAmount, rotation, zoom, colorShift } = req.body;
-  if (name) state.currentEffect = name;
-  if (intensity !== undefined) state.intensity = Math.max(0, Math.min(1, intensity));
-  if (feedbackAmount !== undefined) state.feedbackAmount = Math.max(0, Math.min(1, feedbackAmount));
-  if (rotation !== undefined) state.rotation = rotation;
-  if (zoom !== undefined) state.zoom = zoom;
-  if (colorShift !== undefined) state.colorShift = colorShift;
+  if (name && VALID_EFFECTS.includes(name)) state.currentEffect = name;
+  if (intensity !== undefined) state.intensity = clampNum(intensity, 0, 1, state.intensity);
+  if (feedbackAmount !== undefined) state.feedbackAmount = clampNum(feedbackAmount, 0, 0.99, state.feedbackAmount);
+  if (rotation !== undefined) state.rotation = clampNum(rotation, -0.1, 0.1, state.rotation);
+  if (zoom !== undefined) state.zoom = clampNum(zoom, 0.9, 1.1, state.zoom);
+  if (colorShift !== undefined) state.colorShift = clampNum(colorShift, 0, 1, state.colorShift);
   const params = describeParams(req.body);
   autoCot(`fx: ${state.currentEffect}${params ? ' | ' + params : ''}`);
   broadcast({ type: 'effect', ...state });
@@ -205,11 +255,12 @@ app.post('/api/transition', (req, res) => {
   }
 });
 
-// Flash (strobe)
+// Flash (strobe) — triggers a 1.0 pulse that the browser decays locally.
+// Server resets to 0 after broadcast so /api/state doesn't report stale flash.
 app.post('/api/flash', (req, res) => {
-  state.flash = 1.0;
   autoCot('flash');
-  broadcast({ type: 'flash', flash: state.flash });
+  broadcast({ type: 'flash', flash: 1.0 });
+  state.flash = 0; // browser handles decay; server stays clean
   res.json({ ok: true });
 });
 
@@ -226,14 +277,26 @@ app.post('/api/blackout', (req, res) => {
 // PATCH /api/panel/:id { effect, state: { intensity, rotation, ... } }
 app.patch('/api/panel/:id', (req, res) => {
   const id = parseInt(req.params.id);
+  if (isNaN(id)) return res.status(400).json({ error: 'Invalid panel id' });
   const panel = state.panels.find(p => p.id === id);
   if (!panel) return res.status(404).json({ error: 'Panel not found' });
-  if (req.body.effect) panel.effect = req.body.effect;
-  if (req.body.source !== undefined) panel.source = req.body.source;
-  if (req.body.source2 !== undefined) panel.source2 = req.body.source2;
-  if (req.body.state) {
+  if (req.body.effect && VALID_EFFECTS.includes(req.body.effect)) panel.effect = req.body.effect;
+  if (typeof req.body.source === 'string' || req.body.source === null) panel.source = req.body.source;
+  if (typeof req.body.source2 === 'string' || req.body.source2 === null) panel.source2 = req.body.source2;
+  if (req.body.state && typeof req.body.state === 'object') {
     if (!panel.state) panel.state = {};
-    Object.assign(panel.state, req.body.state);
+    // Clamp incoming state values
+    const s = req.body.state;
+    if (s.intensity !== undefined) panel.state.intensity = clampNum(s.intensity, 0, 1, panel.state.intensity);
+    if (s.feedbackAmount !== undefined) panel.state.feedbackAmount = clampNum(s.feedbackAmount, 0, 0.99, panel.state.feedbackAmount);
+    if (s.rotation !== undefined) panel.state.rotation = clampNum(s.rotation, -0.1, 0.1, panel.state.rotation);
+    if (s.zoom !== undefined) panel.state.zoom = clampNum(s.zoom, 0.9, 1.1, panel.state.zoom);
+    if (s.colorShift !== undefined) panel.state.colorShift = clampNum(s.colorShift, 0, 1, panel.state.colorShift);
+    if (s.brightness !== undefined) panel.state.brightness = clampNum(s.brightness, 0, 2, panel.state.brightness);
+    if (s.glitch !== undefined) panel.state.glitch = clampNum(s.glitch, 0, 1, panel.state.glitch);
+    if (s.sourceMix !== undefined) panel.state.sourceMix = clampNum(s.sourceMix, 0, 1, panel.state.sourceMix);
+    if (s.blend2 !== undefined) panel.state.blend2 = clampNum(s.blend2, 0, 1, panel.state.blend2);
+    if (s.blendMode !== undefined) panel.state.blendMode = clampNum(s.blendMode, 0, 4, panel.state.blendMode);
   }
   broadcast({ type: 'panels', panels: state.panels });
   res.json({ ok: true, panel });
@@ -259,7 +322,7 @@ app.post('/api/mode', (req, res) => {
     state.mode = mode;
     broadcast({ type: 'mode', mode });
     // Start/stop autopilot based on mode
-    if (mode === 'autonomous') {
+    if (mode === 'autonomous' || mode === 'copilot') {
       autopilot.start();
     } else if (mode === 'manual') {
       autopilot.stop();
@@ -296,12 +359,16 @@ app.post('/api/panels', (req, res) => {
   if (!Array.isArray(newPanels) || newPanels.length === 0) {
     return res.status(400).json({ error: 'panels must be a non-empty array' });
   }
-  state.panels = newPanels;
+  if (newPanels.length > 8) {
+    return res.status(400).json({ error: 'max 8 panels' });
+  }
+  const sanitized = newPanels.map(sanitizePanel);
+  state.panels = sanitized;
   // Describe panels compactly for CoT
-  const desc = newPanels.map((p, i) => `${i}:${p.effect || '?'}/${(p.source || '?').replace(/\.(jpg|jpeg|png|mp4|webm)$/i, '').slice(0, 15)}`).join(' ');
-  autoCot(`panels [${newPanels.length}]: ${desc}`);
-  broadcast({ type: 'panels', panels: newPanels });
-  res.json({ ok: true, panels: newPanels });
+  const desc = sanitized.map((p, i) => `${i}:${p.effect || '?'}/${(p.source || '?').replace(/\.(jpg|jpeg|png|mp4|webm)$/i, '').slice(0, 15)}`).join(' ');
+  autoCot(`panels [${sanitized.length}]: ${desc}`);
+  broadcast({ type: 'panels', panels: sanitized });
+  res.json({ ok: true, panels: sanitized });
 });
 
 // Get panels
@@ -393,6 +460,16 @@ const autopilot = {
   energyDir: 1, // 1 = building, -1 = dropping
   anchorSource: null, // stays consistent across transitions
 
+  scheduleNext() {
+    // Copilot mode runs slower (15-25s) than autonomous (8-15s)
+    const base = state.mode === 'copilot' ? 15000 : 8000;
+    const jitter = state.mode === 'copilot' ? 10000 : 7000;
+    this.timer = setTimeout(() => {
+      this.step();
+      if (this.timer) this.scheduleNext();
+    }, base + Math.random() * jitter);
+  },
+
   start() {
     if (this.timer) return;
     // Pick a video as anchor if available, otherwise first image
@@ -403,15 +480,15 @@ const autopilot = {
     this.energy = 0.1;
     this.energyDir = 1;
     this.stepIndex = 0;
-    console.log(`[autopilot] started — anchor: ${this.anchorSource}`);
-    autoCot('autopilot engaged', 'thought');
+    console.log(`[autopilot] started (${state.mode}) — anchor: ${this.anchorSource}`);
+    autoCot(`autopilot engaged (${state.mode})`, 'thought');
     this.step();
-    this.timer = setInterval(() => this.step(), 8000 + Math.random() * 7000);
+    this.scheduleNext();
   },
 
   stop() {
     if (this.timer) {
-      clearInterval(this.timer);
+      clearTimeout(this.timer);
       this.timer = null;
       console.log('[autopilot] stopped');
     }
@@ -460,10 +537,12 @@ const autopilot = {
       return;
     }
 
-    // Evolve energy
-    this.energy += this.energyDir * (0.08 + Math.random() * 0.12);
-    if (this.energy >= 1.0) {
-      this.energy = 1.0;
+    // Evolve energy (copilot mode caps at 0.6 for gentler changes)
+    const energyStep = state.mode === 'copilot' ? 0.05 + Math.random() * 0.08 : 0.08 + Math.random() * 0.12;
+    const energyCap = state.mode === 'copilot' ? 0.6 : 1.0;
+    this.energy += this.energyDir * energyStep;
+    if (this.energy >= energyCap) {
+      this.energy = energyCap;
       this.energyDir = -1; // start dropping
     } else if (this.energy <= 0.05) {
       this.energy = 0.1;
