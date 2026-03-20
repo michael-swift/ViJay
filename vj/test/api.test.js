@@ -207,3 +207,235 @@ describe('Scene replication', () => {
     assert.strictEqual(data.mode, 'autonomous');
   });
 });
+
+async function del(path) {
+  const res = await fetch(`${BASE}${path}`, { method: 'DELETE' });
+  return { status: res.status, data: await res.json() };
+}
+
+describe('Cue system — templates', () => {
+  const templateName = '__test_template__';
+
+  after(async () => {
+    // Clean up
+    await del(`/api/cues/template/${templateName}`);
+  });
+
+  it('GET /api/cues returns templates and scenes', async () => {
+    const { status, data } = await get('/api/cues');
+    assert.strictEqual(status, 200);
+    assert.ok(data.templates);
+    assert.ok(data.scenes);
+    // Built-in templates from LAYOUTS should be present
+    assert.ok(data.templates['full'], 'built-in "full" template should exist');
+    assert.ok(data.templates['cinema'], 'built-in "cinema" template should exist');
+  });
+
+  it('POST /api/cues/template saves a template', async () => {
+    const { status, data } = await post('/api/cues/template', {
+      name: templateName,
+      panels: [
+        { id: 0, rect: { x: 0, y: 0, w: 1, h: 1 }, effect: 'feedback', source: '$anchor' },
+      ],
+    });
+    assert.strictEqual(status, 200);
+    assert.ok(data.ok);
+    assert.strictEqual(data.template.name, templateName);
+  });
+
+  it('saved template appears in GET /api/cues', async () => {
+    const { data } = await get('/api/cues');
+    assert.ok(data.templates[templateName]);
+  });
+
+  it('POST /api/cues/template rejects missing name', async () => {
+    const { status } = await post('/api/cues/template', {
+      panels: [{ id: 0, rect: { x: 0, y: 0, w: 1, h: 1 }, effect: 'feedback' }],
+    });
+    assert.strictEqual(status, 400);
+  });
+
+  it('POST /api/cues/template rejects missing panels', async () => {
+    const { status } = await post('/api/cues/template', { name: 'bad' });
+    assert.strictEqual(status, 400);
+  });
+
+  it('DELETE /api/cues/template removes it', async () => {
+    // Save one first
+    await post('/api/cues/template', {
+      name: '__to_delete__',
+      panels: [{ id: 0, rect: { x: 0, y: 0, w: 1, h: 1 }, effect: 'feedback' }],
+    });
+    const { status, data } = await del('/api/cues/template/__to_delete__');
+    assert.strictEqual(status, 200);
+    assert.ok(data.ok);
+    // Verify gone
+    const { data: cuesData } = await get('/api/cues');
+    assert.ok(!cuesData.templates['__to_delete__']);
+  });
+
+  it('DELETE /api/cues/template returns 404 for non-existent', async () => {
+    const { status } = await del('/api/cues/template/__does_not_exist__');
+    assert.strictEqual(status, 404);
+  });
+});
+
+describe('Cue system — scenes', () => {
+  const sceneName = '__test_scene__';
+
+  after(async () => {
+    await del(`/api/cues/scene/${sceneName}`);
+    await del('/api/cues/scene/__saved_current__');
+  });
+
+  it('POST /api/cues/scene saves a direct scene', async () => {
+    const { status, data } = await post('/api/cues/scene', {
+      name: sceneName,
+      panels: [
+        { id: 0, rect: { x: 0, y: 0, w: 0.5, h: 1 }, effect: 'feedback', source: null },
+        { id: 1, rect: { x: 0.5, y: 0, w: 0.5, h: 1 }, effect: 'glitch', source: 'color:#ff0000' },
+      ],
+    });
+    assert.strictEqual(status, 200);
+    assert.ok(data.ok);
+    assert.strictEqual(data.scene.name, sceneName);
+  });
+
+  it('POST /api/cues/scene saves a template-based scene', async () => {
+    // First save a template
+    await post('/api/cues/template', {
+      name: '__tmpl_for_scene__',
+      panels: [
+        { id: 0, rect: { x: 0, y: 0, w: 1, h: 1 }, effect: '$effect', source: '$anchor' },
+      ],
+    });
+    const { status, data } = await post('/api/cues/scene', {
+      name: '__tmpl_scene__',
+      template: '__tmpl_for_scene__',
+      vars: { '$anchor': 'color:#00ff00' },
+    });
+    assert.strictEqual(status, 200);
+    assert.ok(data.ok);
+    assert.strictEqual(data.scene.template, '__tmpl_for_scene__');
+
+    // Clean up
+    await del('/api/cues/scene/__tmpl_scene__');
+    await del('/api/cues/template/__tmpl_for_scene__');
+  });
+
+  it('POST /api/cues/scene rejects missing name', async () => {
+    const { status } = await post('/api/cues/scene', {
+      panels: [{ id: 0, rect: { x: 0, y: 0, w: 1, h: 1 }, effect: 'feedback' }],
+    });
+    assert.strictEqual(status, 400);
+  });
+
+  it('POST /api/cues/scene rejects missing template and panels', async () => {
+    const { status } = await post('/api/cues/scene', { name: 'bad' });
+    assert.strictEqual(status, 400);
+  });
+
+  it('POST /api/cues/scene/save-current snapshots current panels', async () => {
+    // Set up known panels first
+    await post('/api/panels', {
+      panels: [{ id: 0, rect: { x: 0, y: 0, w: 1, h: 1 }, effect: 'feedback', source: null }],
+    });
+    const { status, data } = await post('/api/cues/scene/save-current', { name: '__saved_current__' });
+    assert.strictEqual(status, 200);
+    assert.ok(data.ok);
+    assert.strictEqual(data.scene.name, '__saved_current__');
+    assert.ok(Array.isArray(data.scene.panels));
+    assert.strictEqual(data.scene.panels.length, 1);
+  });
+
+  it('POST /api/cues/scene/save-current auto-names when no name given', async () => {
+    const { data } = await post('/api/cues/scene/save-current', {});
+    assert.ok(data.ok);
+    assert.ok(data.scene.name.startsWith('scene-'));
+    // Clean up
+    await del(`/api/cues/scene/${data.scene.name}`);
+  });
+
+  it('DELETE /api/cues/scene removes it', async () => {
+    await post('/api/cues/scene', {
+      name: '__to_delete_scene__',
+      panels: [{ id: 0, rect: { x: 0, y: 0, w: 1, h: 1 }, effect: 'feedback' }],
+    });
+    const { status } = await del('/api/cues/scene/__to_delete_scene__');
+    assert.strictEqual(status, 200);
+  });
+
+  it('DELETE /api/cues/scene returns 404 for non-existent', async () => {
+    const { status } = await del('/api/cues/scene/__nope__');
+    assert.strictEqual(status, 404);
+  });
+});
+
+describe('Cue system — recall', () => {
+  before(async () => {
+    // Set up a direct scene and a template for recall tests
+    await post('/api/cues/scene', {
+      name: '__recall_direct__',
+      panels: [
+        { id: 0, rect: { x: 0, y: 0, w: 0.6, h: 1 }, effect: 'glitch', source: 'color:#aabbcc',
+          state: { intensity: 0.8 } },
+        { id: 1, rect: { x: 0.6, y: 0, w: 0.4, h: 1 }, effect: 'noise', source: null },
+      ],
+    });
+    await post('/api/cues/template', {
+      name: '__recall_tmpl__',
+      panels: [
+        { id: 0, rect: { x: 0, y: 0, w: 1, h: 0.5 }, effect: 'feedback', source: '$dark' },
+        { id: 1, rect: { x: 0, y: 0.5, w: 1, h: 0.5 }, effect: '$effect', source: '$dark' },
+      ],
+    });
+  });
+
+  after(async () => {
+    await del('/api/cues/scene/__recall_direct__');
+    await del('/api/cues/template/__recall_tmpl__');
+  });
+
+  it('POST /api/cues/recall recalls a direct scene', async () => {
+    const { status, data } = await post('/api/cues/recall', { name: '__recall_direct__' });
+    assert.strictEqual(status, 200);
+    assert.ok(data.ok);
+    assert.strictEqual(data.panels.length, 2);
+    assert.strictEqual(data.panels[0].effect, 'glitch');
+    assert.strictEqual(data.panels[0].source, 'color:#aabbcc');
+    // Verify state was applied
+    const { data: stateData } = await get('/api/state');
+    assert.strictEqual(stateData.panels.length, 2);
+    assert.strictEqual(stateData.panels[0].effect, 'glitch');
+  });
+
+  it('POST /api/cues/recall recalls a template with variable resolution', async () => {
+    const { status, data } = await post('/api/cues/recall', { name: '__recall_tmpl__' });
+    assert.strictEqual(status, 200);
+    assert.ok(data.ok);
+    assert.strictEqual(data.panels.length, 2);
+    // $dark should have resolved to a color:# value
+    assert.ok(data.panels[0].source.startsWith('color:#'), `expected color source, got: ${data.panels[0].source}`);
+    assert.ok(data.panels[1].source.startsWith('color:#'));
+    // $effect should have resolved to a valid effect name
+    const validEffects = ['feedback', 'glitch', 'colorshift', 'noise', 'kaleidoscope', 'vhs', 'pixelate', 'mirror'];
+    assert.ok(validEffects.includes(data.panels[1].effect), `unexpected effect: ${data.panels[1].effect}`);
+  });
+
+  it('POST /api/cues/recall recalls a built-in layout by name', async () => {
+    const { status, data } = await post('/api/cues/recall', { name: 'spotlight' });
+    assert.strictEqual(status, 200);
+    assert.ok(data.ok);
+    assert.strictEqual(data.panels.length, 3);
+  });
+
+  it('POST /api/cues/recall returns 404 for non-existent cue', async () => {
+    const { status } = await post('/api/cues/recall', { name: '__nope__' });
+    assert.strictEqual(status, 404);
+  });
+
+  it('POST /api/cues/recall rejects missing name', async () => {
+    const { status } = await post('/api/cues/recall', {});
+    assert.strictEqual(status, 400);
+  });
+});
