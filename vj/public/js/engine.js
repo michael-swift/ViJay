@@ -128,7 +128,13 @@ window.VJ = window.VJ || {};
             }
           }
         }
-        if (done) panel.targetState = null;
+        if (done) {
+          // If blend2 lerped to 0, clear source2 (cross-fade complete)
+          if (panel.targetState.blend2 !== undefined && panel.targetState.blend2 === 0) {
+            panel.source2 = null;
+          }
+          panel.targetState = null;
+        }
       }
       // Lerp rect (smooth panel resize/move)
       if (panel.targetRect) {
@@ -317,9 +323,23 @@ window.VJ = window.VJ || {};
         // This preserves the feedback buffer (no visual reset) and smoothly transitions.
         delete oldById[id]; // mark as reused
 
-        // Update source + effect immediately (can't lerp these)
+        // Update effect immediately (can't lerp)
         if (cfg.effect) existing.effect = cfg.effect;
-        if (cfg.source !== undefined) existing.source = cfg.source;
+
+        // Source cross-fade: if the primary source changed, move old source to source2
+        // and blend from old (blend2=1) to new (blend2→0) via the existing lerp system.
+        if (cfg.source !== undefined && cfg.source !== existing.source) {
+          // Move current source to source2 so old image stays visible during fade
+          existing.source2 = existing.source;
+          existing.source = cfg.source;
+          // Start showing old source (blend2=1), lerp to new (blend2=0)
+          existing.state.blend2 = 1.0;
+          if (!existing.targetState) existing.targetState = {};
+          existing.targetState.blend2 = 0.0;
+        } else if (cfg.source !== undefined) {
+          existing.source = cfg.source;
+        }
+        // If explicit source2 is provided, use it directly (overrides cross-fade)
         if (cfg.source2 !== undefined) existing.source2 = cfg.source2;
         if (cfg.sourceIndex !== undefined) existing.sourceIndex = cfg.sourceIndex;
 
@@ -462,6 +482,17 @@ window.VJ = window.VJ || {};
         break;
 
       // Camera not yet wired to panel render path — C key reserved for future use
+
+      case 'g':
+        // Quick-save current scene
+        fetch('/api/cues/scene/save-current', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({}),
+        }).then(r => r.json()).then(d => {
+          if (d.ok) console.log('[engine] scene saved:', d.scene.name);
+        }).catch(err => console.error('[engine] save failed:', err));
+        break;
 
       case 'h': state.hudVisible = !state.hudVisible; break;
 

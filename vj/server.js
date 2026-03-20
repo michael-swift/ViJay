@@ -11,6 +11,34 @@ const wss = new WebSocketServer({ server });
 
 const PORT = process.env.PORT || 3000;
 const IMAGES_DIR = path.join(__dirname, 'images');
+const CUES_FILE = path.join(__dirname, 'cues.json');
+
+// --- Cue System ---
+// Two-level cue system: templates (layouts with variable slots) and scenes (bound templates)
+const cues = { templates: {}, scenes: {} };
+
+function loadCues() {
+  try {
+    if (fs.existsSync(CUES_FILE)) {
+      const data = JSON.parse(fs.readFileSync(CUES_FILE, 'utf8'));
+      if (data.templates) cues.templates = data.templates;
+      if (data.scenes) cues.scenes = data.scenes;
+      console.log(`[cues] loaded ${Object.keys(cues.templates).length} templates, ${Object.keys(cues.scenes).length} scenes`);
+    }
+  } catch (e) {
+    console.error('[cues] failed to load cues.json:', e.message);
+  }
+}
+
+function saveCues() {
+  try {
+    fs.writeFileSync(CUES_FILE, JSON.stringify(cues, null, 2));
+  } catch (e) {
+    console.error('[cues] failed to save cues.json:', e.message);
+  }
+}
+
+loadCues();
 
 // Serve static files
 app.use(express.static(path.join(__dirname, 'public')));
@@ -445,6 +473,210 @@ app.get('/api/layouts', (req, res) => {
 
 // (Layer API removed — use per-panel source2/blend2 via /api/panels instead)
 
+// --- Variable Resolution ---
+// Resolves $tokens in template panels to concrete values.
+function resolveToken(token, vars, ctx) {
+  // Check explicit overrides first
+  if (vars && vars[token] !== undefined) return vars[token];
+
+  switch (token) {
+    case '$anchor':
+      return ctx.anchor || null;
+    case '$random':
+      return ctx.images.length > 0
+        ? ctx.images[Math.floor(Math.random() * ctx.images.length)]
+        : null;
+    case '$random:photo': {
+      const photos = ctx.images.filter(f => /\.(jpg|jpeg|png|gif|webp|bmp)$/i.test(f));
+      return photos.length > 0 ? photos[Math.floor(Math.random() * photos.length)] : null;
+    }
+    case '$random:video': {
+      const videos = ctx.images.filter(f => /\.(mp4|webm|mov)$/i.test(f));
+      return videos.length > 0 ? videos[Math.floor(Math.random() * videos.length)] : null;
+    }
+    case '$dark': {
+      const darkColors = ['#1a0a2e', '#0a1a0a', '#0f0505', '#050510', '#0a0a1a'];
+      return 'color:' + darkColors[Math.floor(Math.random() * darkColors.length)];
+    }
+    case '$effect': {
+      const e = ctx.energy || 0.5;
+      if (e > 0.75) return ['glitch', 'noise', 'feedback'][Math.floor(Math.random() * 3)];
+      if (e > 0.4) return ['feedback', 'glitch', 'colorshift'][Math.floor(Math.random() * 3)];
+      return ['feedback', 'colorshift'][Math.floor(Math.random() * 2)];
+    }
+    default:
+      return token; // literal string, return as-is
+  }
+}
+
+function resolveTemplate(template, vars, ctx) {
+  return template.panels.map((panel, i) => {
+    const resolved = { ...panel };
+    // Resolve source tokens
+    if (typeof resolved.source === 'string' && resolved.source.startsWith('$')) {
+      resolved.source = resolveToken(resolved.source, vars, ctx);
+    }
+    if (typeof resolved.source2 === 'string' && resolved.source2.startsWith('$')) {
+      resolved.source2 = resolveToken(resolved.source2, vars, ctx);
+    }
+    // Resolve effect tokens
+    if (typeof resolved.effect === 'string' && resolved.effect.startsWith('$')) {
+      resolved.effect = resolveToken(resolved.effect, vars, ctx);
+    }
+    return sanitizePanel(resolved, i);
+  });
+}
+
+// Infer energy level from a scene's panel states
+function inferEnergy(panels) {
+  if (!panels || panels.length === 0) return 0.5;
+  let total = 0;
+  let count = 0;
+  for (const p of panels) {
+    const s = p.state || {};
+    if (s.intensity !== undefined) { total += s.intensity; count++; }
+    if (s.feedbackAmount !== undefined) { total += Math.max(0, s.feedbackAmount - 0.7); count++; }
+    if (s.glitch !== undefined) { total += s.glitch * 2; count++; }
+    if (s.colorShift !== undefined) { total += s.colorShift; count++; }
+  }
+  return count > 0 ? Math.max(0, Math.min(1, total / count)) : 0.5;
+}
+
+// --- Cue API Endpoints ---
+
+// List all templates and scenes
+app.get('/api/cues', (req, res) => {
+  // Include built-in templates (from LAYOUTS) alongside saved templates
+  const builtinTemplates = {};
+  for (const [name, fn] of Object.entries(LAYOUTS)) {
+    builtinTemplates[name] = { name, builtin: true, panels: fn([], null).map(sanitizePanel) };
+  }
+  res.json({
+    templates: { ...builtinTemplates, ...cues.templates },
+    scenes: cues.scenes,
+  });
+});
+
+// Save a template
+app.post('/api/cues/template', (req, res) => {
+  const { name, panels: templatePanels } = req.body;
+  if (!name || typeof name !== 'string') {
+    return res.status(400).json({ error: 'name is required' });
+  }
+  if (!Array.isArray(templatePanels) || templatePanels.length === 0) {
+    return res.status(400).json({ error: 'panels must be a non-empty array' });
+  }
+  cues.templates[name] = { name, panels: templatePanels };
+  saveCues();
+  autoCot(`template saved: ${name}`);
+  res.json({ ok: true, template: cues.templates[name] });
+});
+
+// Delete a template
+app.delete('/api/cues/template/:name', (req, res) => {
+  const { name } = req.params;
+  if (!cues.templates[name]) {
+    return res.status(404).json({ error: 'Template not found' });
+  }
+  delete cues.templates[name];
+  saveCues();
+  res.json({ ok: true });
+});
+
+// Save a scene
+app.post('/api/cues/scene', (req, res) => {
+  const { name, template, vars, panels: scenePanels } = req.body;
+  if (!name || typeof name !== 'string') {
+    return res.status(400).json({ error: 'name is required' });
+  }
+  if (template) {
+    // Template-based scene
+    cues.scenes[name] = { name, template, vars: vars || {} };
+  } else if (Array.isArray(scenePanels) && scenePanels.length > 0) {
+    // Direct scene (no template)
+    cues.scenes[name] = { name, panels: scenePanels };
+  } else {
+    return res.status(400).json({ error: 'Either template or panels is required' });
+  }
+  saveCues();
+  autoCot(`scene saved: ${name}`);
+  res.json({ ok: true, scene: cues.scenes[name] });
+});
+
+// Save current state as a scene
+app.post('/api/cues/scene/save-current', (req, res) => {
+  const { name } = req.body;
+  const sceneName = name || `scene-${String(Object.keys(cues.scenes).length + 1).padStart(3, '0')}`;
+  cues.scenes[sceneName] = {
+    name: sceneName,
+    panels: state.panels.map(p => ({ ...p })),
+  };
+  saveCues();
+  autoCot(`scene saved: ${sceneName}`);
+  res.json({ ok: true, scene: cues.scenes[sceneName] });
+});
+
+// Delete a scene
+app.delete('/api/cues/scene/:name', (req, res) => {
+  const { name } = req.params;
+  if (!cues.scenes[name]) {
+    return res.status(404).json({ error: 'Scene not found' });
+  }
+  delete cues.scenes[name];
+  saveCues();
+  res.json({ ok: true });
+});
+
+// Recall a scene or template by name
+app.post('/api/cues/recall', (req, res) => {
+  const { name } = req.body;
+  if (!name) return res.status(400).json({ error: 'name is required' });
+
+  const ctx = {
+    anchor: autopilot.anchorSource,
+    images: state.images,
+    energy: autopilot.energy,
+  };
+
+  let resolvedPanels;
+
+  // Check scenes first, then templates, then built-in layouts
+  const scene = cues.scenes[name];
+  if (scene) {
+    if (scene.template) {
+      // Template-based scene — find the template
+      const tmpl = cues.templates[scene.template] || getBuiltinTemplate(scene.template);
+      if (!tmpl) return res.status(404).json({ error: `Template "${scene.template}" not found` });
+      resolvedPanels = resolveTemplate(tmpl, scene.vars || {}, ctx);
+    } else if (scene.panels) {
+      resolvedPanels = scene.panels.map(sanitizePanel);
+    } else {
+      return res.status(400).json({ error: 'Scene has no template or panels' });
+    }
+  } else {
+    // Try templates
+    const tmpl = cues.templates[name] || getBuiltinTemplate(name);
+    if (tmpl) {
+      resolvedPanels = resolveTemplate(tmpl, {}, ctx);
+    } else {
+      return res.status(404).json({ error: 'Cue not found' });
+    }
+  }
+
+  state.panels = resolvedPanels;
+  state.activePanel = Math.min(state.activePanel, resolvedPanels.length - 1);
+  autoCot(`recall: ${name}`);
+  broadcast({ type: 'panels', panels: resolvedPanels });
+  res.json({ ok: true, panels: resolvedPanels });
+});
+
+// Helper to get a built-in template from LAYOUTS
+function getBuiltinTemplate(name) {
+  const fn = LAYOUTS[name];
+  if (!fn) return null;
+  return { name, panels: fn([], null).map(sanitizePanel) };
+}
+
 // --- Autopilot ---
 // Runs on boot, cycling through visual compositions with energy arcs.
 // Stops when mode is switched to 'manual', resumes on 'autonomous' or 'copilot'.
@@ -551,8 +783,39 @@ const autopilot = {
     }
 
     const p = this.params();
-    const scenes = this.getScenes(p);
-    const scene = scenes[this.stepIndex % scenes.length];
+    const generativeScenes = this.getScenes(p);
+
+    // Build combined pool: saved cues resolved with current context + generative scenes
+    const ctx = { anchor: this.anchorSource, images: state.images, energy: this.energy };
+    const cueScenes = [];
+    for (const scene of Object.values(cues.scenes)) {
+      try {
+        let resolved;
+        if (scene.template) {
+          const tmpl = cues.templates[scene.template] || getBuiltinTemplate(scene.template);
+          if (tmpl) resolved = resolveTemplate(tmpl, scene.vars || {}, ctx);
+        } else if (scene.panels) {
+          resolved = scene.panels.map(sanitizePanel);
+        }
+        if (resolved) {
+          const sceneEnergy = inferEnergy(resolved);
+          // Filter by energy proximity (±0.3)
+          if (Math.abs(sceneEnergy - this.energy) <= 0.3) {
+            cueScenes.push(resolved);
+          }
+        }
+      } catch (e) { /* skip broken cues */ }
+    }
+
+    // Mix: pick from cue scenes 40% of the time if available, else generative
+    let scene;
+    let cueUsed = false;
+    if (cueScenes.length > 0 && Math.random() < 0.4) {
+      scene = cueScenes[Math.floor(Math.random() * cueScenes.length)];
+      cueUsed = true;
+    } else {
+      scene = generativeScenes[this.stepIndex % generativeScenes.length];
+    }
     this.stepIndex++;
 
     state.panels = scene;
@@ -562,7 +825,7 @@ const autopilot = {
       `${i}:${pan.effect}/${(pan.source || '?').replace(/\.(jpg|jpeg|png|mp4|webm)$/i, '').slice(0, 12)}`
     ).join(' ');
     const energyBar = '▓'.repeat(Math.round(this.energy * 10)) + '░'.repeat(10 - Math.round(this.energy * 10));
-    autoCot(`auto [${energyBar}] ${desc}`, 'thought');
+    autoCot(`auto${cueUsed ? ' [cue]' : ''} [${energyBar}] ${desc}`, 'thought');
   },
 
   getScenes(p) {
