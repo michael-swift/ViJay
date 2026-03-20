@@ -357,6 +357,7 @@ app.post('/api/panels', (req, res) => {
   }
   const sanitized = newPanels.map(sanitizePanel);
   state.panels = sanitized;
+  state.activePanel = Math.min(state.activePanel, sanitized.length - 1);
   // Describe panels compactly for CoT
   const desc = sanitized.map((p, i) => `${i}:${p.effect || '?'}/${(p.source || '?').replace(/\.(jpg|jpeg|png|mp4|webm)$/i, '').slice(0, 15)}`).join(' ');
   autoCot(`panels [${sanitized.length}]: ${desc}`);
@@ -424,12 +425,14 @@ app.post('/api/layout', (req, res) => {
   if (!layoutFn) {
     return res.status(400).json({ error: 'Unknown layout', available: Object.keys(LAYOUTS) });
   }
-  const panels = layoutFn(sources || [], anchor);
+  const rawPanels = layoutFn(sources || [], anchor);
   // Optionally override effects per panel
   if (effects && Array.isArray(effects)) {
-    effects.forEach((fx, i) => { if (fx && panels[i]) panels[i].effect = fx; });
+    effects.forEach((fx, i) => { if (fx && rawPanels[i]) rawPanels[i].effect = fx; });
   }
+  const panels = rawPanels.map(sanitizePanel);
   state.panels = panels;
+  state.activePanel = Math.min(state.activePanel, panels.length - 1);
   const srcs = (sources || []).map(s => (s || '').replace(/\.(jpg|jpeg|png|mp4|webm)$/i, '').slice(0, 12)).join(', ');
   autoCot(`layout: ${name}${srcs ? ' | ' + srcs : ''}`);
   broadcast({ type: 'panels', panels });

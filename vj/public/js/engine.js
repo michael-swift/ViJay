@@ -574,16 +574,16 @@ window.VJ = window.VJ || {};
         feedback: panel.state.feedbackAmount,
         rotation: panel.state.rotation,
         zoom: panel.state.zoom,
-        brightness: panel.state.brightness || 1.05,
-        glitch: panel.state.glitch || 0.0,
+        brightness: panel.state.brightness ?? 1.05,
+        glitch: panel.state.glitch ?? 0.0,
         colorShift: panel.state.colorShift,
         beat: VJ.audio.getBeat(),
-        sourceMix: panel.state.sourceMix || 0.5,
+        sourceMix: panel.state.sourceMix ?? 0.5,
         prevTexture: panel.rtA.texture,
         sourceTexture: source,
         sourceTexture2: source2,
-        blend2: panel.state.blend2 || 0.0,
-        blendMode: panel.state.blendMode || 0,
+        blend2: panel.state.blend2 ?? 0.0,
+        blendMode: panel.state.blendMode ?? 0,
         resolution: new THREE.Vector2(panel.rtA.width, panel.rtA.height),
       });
 
@@ -618,7 +618,7 @@ window.VJ = window.VJ || {};
       renderer.setScissorTest(true);
 
       compositeMaterial.uniforms.tInput.value = panel.rtA.texture;
-      compositeMaterial.uniforms.uBrightness.value = panel.state.brightness || 1.05;
+      compositeMaterial.uniforms.uBrightness.value = panel.state.brightness ?? 1.05;
       compositeMaterial.uniforms.uFlash.value = state.flash;
       compositeMaterial.uniforms.uBlackout.value = state.blackout ? 1.0 : 0.0;
       compositeMaterial.uniforms.uOpacity.value = panel.state.opacity !== undefined ? panel.state.opacity : 1.0;
