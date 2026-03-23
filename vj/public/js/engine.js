@@ -5,7 +5,7 @@ window.VJ = window.VJ || {};
   // --- Three.js setup ---
   const renderer = new THREE.WebGLRenderer({ antialias: false, alpha: false });
   renderer.setSize(window.innerWidth, window.innerHeight);
-  renderer.setPixelRatio(window.devicePixelRatio);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1));
   renderer.autoClear = false; // we manage clearing ourselves for multi-panel
   document.body.appendChild(renderer.domElement);
 
@@ -83,31 +83,26 @@ window.VJ = window.VJ || {};
 
   // Transition system: panels lerp from current to target values each frame.
   // LERP_SPEED controls how fast transitions are (higher = faster, 1.0 = instant).
-  const LERP_SPEED = 0.06; // ~0.5 second to reach target
+  const LERP_SPEED = 0.025; // smooth transitions for effect params
+  const OPACITY_FADE_PER_FRAME = 0.005; // linear opacity fade (~200 frames ≈ 3.3s)
   const LERPABLE_KEYS = ['intensity', 'feedbackAmount', 'rotation', 'zoom', 'colorShift', 'brightness', 'glitch', 'sourceMix', 'opacity', 'blend2'];
 
   function createPanel(id, rect, effect, source, opts) {
-    const w = Math.max(1, Math.floor(window.innerWidth * rect.w));
-    const h = Math.max(1, Math.floor(window.innerHeight * rect.h));
-    const fadeIn = opts && opts.fadeIn;
+    const w = Math.max(1, Math.min(960, Math.floor(window.innerWidth * rect.w)));
+    const h = Math.max(1, Math.min(540, Math.floor(window.innerHeight * rect.h)));
     const panel = {
       id: id,
-      rect: rect,             // { x, y, w, h } in 0-1 normalized coords
-      targetRect: { ...rect }, // lerp target for rect (smooth resize/reposition)
+      rect: { ...rect },
       effect: effect || 'feedback',
-      source: source || null,  // image/video name, "color:#hex", or null (= use current image)
-      source2: (opts && opts.source2) || null, // second source for blending
-      sourceIndex: -1,         // resolved index, -1 = use source string
+      source: source || null,
+      source2: (opts && opts.source2) || null,
+      sourceIndex: -1,
       rtA: new THREE.WebGLRenderTarget(w, h, rtParams),
       rtB: new THREE.WebGLRenderTarget(w, h, rtParams),
-      state: { ...DEFAULT_PANEL_STATE },
-      targetState: null,       // when set, state lerps toward this each frame
-      dying: false,            // marked for fade-out removal
+      state: { ...DEFAULT_PANEL_STATE, opacity: 0 },
+      targetState: { opacity: 1.0 },
+      dying: false,
     };
-    if (fadeIn) {
-      panel.state.opacity = 0;
-      panel.targetState = { opacity: 1.0 };
-    }
     return panel;
   }
 
@@ -121,7 +116,13 @@ window.VJ = window.VJ || {};
           if (panel.targetState[key] !== undefined) {
             const diff = panel.targetState[key] - panel.state[key];
             if (Math.abs(diff) > 0.0001) {
-              panel.state[key] += diff * LERP_SPEED;
+              if (key === 'opacity') {
+                panel.state[key] += (diff > 0 ? 1 : -1) * OPACITY_FADE_PER_FRAME;
+                if (diff > 0 && panel.state[key] > panel.targetState[key]) panel.state[key] = panel.targetState[key];
+                if (diff < 0 && panel.state[key] < panel.targetState[key]) panel.state[key] = panel.targetState[key];
+              } else {
+                panel.state[key] += diff * LERP_SPEED;
+              }
               done = false;
             } else {
               panel.state[key] = panel.targetState[key];
@@ -129,34 +130,15 @@ window.VJ = window.VJ || {};
           }
         }
         if (done) {
-          // If blend2 lerped to 0, clear source2 (cross-fade complete)
           if (panel.targetState.blend2 !== undefined && panel.targetState.blend2 === 0) {
             panel.source2 = null;
           }
           panel.targetState = null;
         }
       }
-      // Lerp rect (smooth panel resize/move)
-      if (panel.targetRect) {
-        for (const key of ['x', 'y', 'w', 'h']) {
-          const diff = panel.targetRect[key] - panel.rect[key];
-          if (Math.abs(diff) > 0.001) {
-            panel.rect[key] += diff * LERP_SPEED;
-          } else {
-            panel.rect[key] = panel.targetRect[key];
-          }
-        }
-        // Resize render targets when panel dimensions change significantly
-        const newW = Math.max(1, Math.floor(window.innerWidth * panel.rect.w));
-        const newH = Math.max(1, Math.floor(window.innerHeight * panel.rect.h));
-        const curW = panel.rtA.width;
-        const curH = panel.rtA.height;
-        if (Math.abs(newW - curW) > curW * 0.1 || Math.abs(newH - curH) > curH * 0.1) {
-          panel.rtA.setSize(newW, newH);
-          panel.rtB.setSize(newW, newH);
-        }
-      }
+
     }
+
     // Remove fully faded-out dying panels
     const before = panels.length;
     panels = panels.filter(p => {
@@ -188,7 +170,8 @@ window.VJ = window.VJ || {};
       if (panel.source.startsWith('color:')) {
         return getColorTexture(panel.source.slice(6));
       }
-      // Named image/video — also ensure video is playing
+      // Named image/video — set reverse mode and ensure playing
+      VJ.images.setReverse(panel.source, !!panel.reverse);
       VJ.images.ensurePlaying(panel.source);
       const idx = VJ.images.getIndexByName(panel.source);
       if (idx >= 0) return VJ.images.getTextureByIndex(idx);
@@ -310,47 +293,17 @@ window.VJ = window.VJ || {};
   });
 
   function applyPanelConfig(configs) {
-    // Build a map of existing panels by ID for reuse (skip dying panels)
-    const oldById = {};
-    panels.forEach(p => { if (!p.dying) oldById[p.id] = p; });
+    // Dying panels fade out. New panels fade in. No movement.
+    panels.forEach(p => {
+      if (!p.dying) {
+        p.dying = true;
+        p.targetState = { opacity: 0 };
+      }
+    });
 
+    // Create all new panels with fade-in
     const newPanels = configs.map((cfg, i) => {
       const id = cfg.id !== undefined ? cfg.id : i;
-      const existing = oldById[id];
-
-      if (existing) {
-        // Panel with this ID already exists — lerp to new values instead of recreating.
-        // This preserves the feedback buffer (no visual reset) and smoothly transitions.
-        delete oldById[id]; // mark as reused
-
-        // Update effect immediately (can't lerp)
-        if (cfg.effect) existing.effect = cfg.effect;
-
-        // Source cross-fade: if the primary source changed, move old source to source2
-        // and blend from old (blend2=1) to new (blend2→0) via the existing lerp system.
-        if (cfg.source !== undefined && cfg.source !== existing.source) {
-          // Move current source to source2 so old image stays visible during fade
-          existing.source2 = existing.source;
-          existing.source = cfg.source;
-          // Start showing old source (blend2=1), lerp to new (blend2=0)
-          existing.state.blend2 = 1.0;
-          if (!existing.targetState) existing.targetState = {};
-          existing.targetState.blend2 = 0.0;
-        } else if (cfg.source !== undefined) {
-          existing.source = cfg.source;
-        }
-        // If explicit source2 is provided, use it directly (overrides cross-fade)
-        if (cfg.source2 !== undefined) existing.source2 = cfg.source2;
-        if (cfg.sourceIndex !== undefined) existing.sourceIndex = cfg.sourceIndex;
-
-        // Set lerp targets for rect and state
-        if (cfg.rect) existing.targetRect = { ...cfg.rect };
-        if (cfg.state) existing.targetState = { ...cfg.state };
-
-        return existing;
-      }
-
-      // New panel — create fresh with fade-in
       const p = createPanel(
         id,
         cfg.rect || { x: 0, y: 0, w: 1, h: 1 },
@@ -359,26 +312,18 @@ window.VJ = window.VJ || {};
         { fadeIn: true, source2: cfg.source2 }
       );
       if (cfg.sourceIndex !== undefined) p.sourceIndex = cfg.sourceIndex;
+      if (cfg.reverse !== undefined) p.reverse = cfg.reverse;
       if (cfg.state) {
         Object.assign(p.state, cfg.state);
-        // Keep opacity at 0 for fade-in even if state specifies otherwise
         p.state.opacity = 0;
         p.targetState = { ...cfg.state, opacity: 1.0 };
       }
       return p;
     });
 
-    // Fade out removed panels instead of instant destroy
-    Object.values(oldById).forEach(p => {
-      p.dying = true;
-      p.targetState = { opacity: 0 };
-    });
-
-    // Keep dying panels in the list so they continue rendering during fade-out
-    const dyingPanels = panels.filter(p => p.dying);
-    panels = [...newPanels, ...dyingPanels];
+    panels = [...newPanels, ...panels.filter(p => p.dying)];
     activePanel = Math.min(activePanel, newPanels.length - 1);
-    console.log('[engine] panels updated:', newPanels.length, 'active +', dyingPanels.length, 'fading out');
+    console.log('[engine] cross-dissolve:', newPanels.length, 'new,', panels.length - newPanels.length, 'fading out');
   }
 
   // --- Keyboard controls ---
@@ -574,6 +519,7 @@ window.VJ = window.VJ || {};
   // (Autonomous behavior removed — server-side autopilot handles this via /api/autopilot)
 
   // --- Render loop ---
+  const _resVec = new THREE.Vector2(); // reusable to avoid GC pressure
   let time = 0;
   let lastFrameTime = performance.now();
 
@@ -585,6 +531,7 @@ window.VJ = window.VJ || {};
     time += dt;
 
     VJ.audio.update();
+    VJ.images.tick(dt);
     reportAudio(now);
     lerpPanels();
 
@@ -615,7 +562,7 @@ window.VJ = window.VJ || {};
         sourceTexture2: source2,
         blend2: panel.state.blend2 ?? 0.0,
         blendMode: panel.state.blendMode ?? 0,
-        resolution: new THREE.Vector2(panel.rtA.width, panel.rtA.height),
+        resolution: _resVec.set(panel.rtA.width, panel.rtA.height),
       });
 
       quad.material = effectMat;

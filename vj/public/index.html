@@ -108,5 +108,15 @@
   <script src="js/effects.js"></script>
   <script src="js/cot.js"></script>
   <script src="js/engine.js"></script>
+  <script>
+    document.body.addEventListener('click', function() {
+      var el = document.documentElement;
+      var isFullscreen = document.fullscreenElement || document.mozFullScreenElement || document.webkitFullscreenElement;
+      if (!isFullscreen) {
+        var rfs = el.requestFullscreen || el.mozRequestFullScreen || el.webkitRequestFullscreen;
+        if (rfs) rfs.call(el).catch(function() {});
+      }
+    });
+  </script>
 </body>
 </html>
