@@ -4,6 +4,7 @@ window.VJ = window.VJ || {};
 VJ.images = (function() {
   const textures = {};       // filename -> THREE.Texture or THREE.VideoTexture
   const videos = {};         // filename -> HTMLVideoElement (for video files only)
+  const videoReverse = {};   // filename -> true if playing in reverse
   let imageList = [];        // current filenames (images + videos)
   let currentIndex = 0;
   let secondIndex = -1;      // -1 = no second source; >= 0 = layer this on top
@@ -181,11 +182,48 @@ VJ.images = (function() {
     return secondIndex >= 0;
   }
 
+  // Oscillating seek: each video gets its own phase so they don't sync up
+  const videoPhase = {};
+  let seekTime = 0;
+
+  // Call once per frame from the render loop to advance the oscillator
+  function tick(dt) {
+    seekTime += dt;
+  }
+
   // Ensure a video is playing by filename (called by engine for panel sources)
   function ensurePlaying(filename) {
-    if (videos[filename] && videos[filename].paused) {
-      videos[filename].play().catch(() => {});
+    const vid = videos[filename];
+    if (!vid) return;
+    if (videoReverse[filename]) {
+      if (!vid.paused) vid.pause();
+      if (vid.readyState >= 2) {
+        // Give each video a unique phase offset
+        if (videoPhase[filename] === undefined) videoPhase[filename] = Math.random() * Math.PI * 2;
+        // Oscillate seek step: biased toward faster (range ~0.7x to ~2.5x)
+        const osc = 1.4 + 0.7 * Math.sin(seekTime * 0.15 + videoPhase[filename]);
+        const step = (1 / 30) * osc;
+        vid.currentTime = Math.max(0, vid.currentTime - step);
+        if (vid.currentTime <= 0.05) vid.currentTime = vid.duration || 1;
+      }
+    } else if (vid.paused) {
+      vid.play().catch(() => {});
     }
+  }
+
+  function setReverse(filename, reverse) {
+    videoReverse[filename] = !!reverse;
+    const vid = videos[filename];
+    if (!vid) return;
+    if (reverse) {
+      vid.pause();
+    } else {
+      vid.play().catch(() => {});
+    }
+  }
+
+  function isReversed(filename) {
+    return !!videoReverse[filename];
   }
 
   function getTextureByIndex(idx) {
@@ -249,5 +287,5 @@ VJ.images = (function() {
     updateVideoPlayback();
   }
 
-  return { init, setImageList, setCurrentIndex, getCurrentTexture, nextImage, prevImage, getCurrentName, getCount, selectSlot, getSlotIndex, getSecondTexture, getSecondName, setSecondIndex, nextSecond, prevSecond, clearSecond, hasSecond, getTextureByIndex, getNameByIndex, getIndexByName, getList, ensurePlaying, reloadTexture };
+  return { init, setImageList, setCurrentIndex, getCurrentTexture, nextImage, prevImage, getCurrentName, getCount, selectSlot, getSlotIndex, getSecondTexture, getSecondName, setSecondIndex, nextSecond, prevSecond, clearSecond, hasSecond, getTextureByIndex, getNameByIndex, getIndexByName, getList, ensurePlaying, reloadTexture, setReverse, isReversed, tick };
 })();

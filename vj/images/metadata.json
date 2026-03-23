@@ -1,0 +1,90 @@
+{
+  "videos/GlenGouldDoc.mov": {
+    "category": "videos",
+    "description": "Documentary footage of Glenn Gould at the piano. Black and white, intimate close-ups of hands and face. Good as anchor — recognizable human presence."
+  },
+  "videos/Musique Concrete.mp4": {
+    "category": "videos",
+    "description": "Musique concrete documentary. Studio equipment, tape machines, experimental sound. Mid-century aesthetic. Works well with glitch effects."
+  },
+  "videos/The New Sound of Music (BBC Do.mp4": {
+    "category": "videos",
+    "description": "BBC documentary on electronic music. Synthesizers, oscilloscopes, early electronic instruments. Retro-futurist feel."
+  },
+  "videos/brakhage-mothlight-slow.mp4": {
+    "category": "videos",
+    "description": "Stan Brakhage's Mothlight slowed down. Abstract organic textures — moth wings, seeds, blades of grass pressed onto film. Pure visual texture, no narrative."
+  },
+  "textures/noise-color.png": {
+    "category": "textures",
+    "description": "Colorful noise pattern. Good as blend layer for adding chromatic texture."
+  },
+  "textures/noise-dark-clouds.png": {
+    "category": "textures",
+    "description": "Dark cloud-like noise. Good as moody background or subtle overlay."
+  },
+  "textures/noise-glitch-bands.png": {
+    "category": "textures",
+    "description": "Horizontal glitch bands. Works with glitch effect for doubled distortion."
+  },
+  "textures/noise-plasma.png": {
+    "category": "textures",
+    "description": "Plasma-style noise gradient. Organic flowing colors, good for colorshift effect."
+  },
+  "textures/noise-static.png": {
+    "category": "textures",
+    "description": "TV static noise. Raw grain texture, good as subtle overlay."
+  },
+  "textures/cal-micrometer.png": {
+    "category": "textures",
+    "description": "Technical micrometer calibration image. Fine grid lines, precise geometry."
+  },
+  "textures/cal-oscilloscope.png": {
+    "category": "textures",
+    "description": "Oscilloscope calibration pattern. Green phosphor on black, retro technical aesthetic."
+  },
+  "textures/cal-test-card.png": {
+    "category": "textures",
+    "description": "TV test card pattern. Color bars and geometry, broadcast aesthetic."
+  },
+  "textures/cal-usaf-target.png": {
+    "category": "textures",
+    "description": "USAF resolution target. Concentric line groups, technical/military aesthetic."
+  },
+  "textures/chill_pink.png": {
+    "category": "textures",
+    "description": "Soft pink gradient. Warm, calm background texture."
+  },
+  "photos/BCI_guys copy.png": {
+    "category": "photos",
+    "description": "Photo of people at a BCI (brain-computer interface) event."
+  },
+  "photos/BCI_oven copy.png": {
+    "category": "photos",
+    "description": "Photo from BCI event — oven or equipment shot."
+  },
+  "photos/bitmap.jpg": {
+    "category": "photos",
+    "description": "Bitmap artwork. Black and white pixel-level composition."
+  },
+  "photos/coloredbitmap.png": {
+    "category": "photos",
+    "description": "Colored version of bitmap artwork. Pixel art with color."
+  },
+  "photos/natto_instructions.png": {
+    "category": "photos",
+    "description": "Natto preparation instructions. Japanese food packaging graphics."
+  },
+  "photos/nightingale1.png": {
+    "category": "photos",
+    "description": "Nightingale image. Could be bird or Florence Nightingale reference."
+  },
+  "photos/notart_transparent.png": {
+    "category": "photos",
+    "description": "Transparent PNG artwork with 'not art' theme."
+  },
+  "photos/replay_memory.jpg": {
+    "category": "photos",
+    "description": "Replay memory visualization. Technical/ML concept art."
+  }
+}

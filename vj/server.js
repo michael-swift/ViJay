@@ -57,10 +57,10 @@ const audio = {
 // Server is the single source of truth. Browser renders from server-broadcast state.
 const state = {
   currentEffect: 'feedback',
-  intensity: 0.5,
-  feedbackAmount: 0.85,
-  rotation: 0.002,
-  zoom: 1.002,
+  intensity: 0.3,
+  feedbackAmount: 0.7,
+  rotation: 0.001,
+  zoom: 1.001,
   colorShift: 0.0,
   images: [],
   currentImageIndex: 0,
@@ -82,55 +82,88 @@ const PRESETS = {
   drift: { intensity: 0.6, feedbackAmount: 0.88, rotation: 0.005, zoom: 1.003, colorShift: 0.1 },
 };
 
-// --- Image scanning ---
+// --- Image scanning (recursive, stores relative paths like "videos/file.mp4") ---
+const MEDIA_RE = /\.(jpg|jpeg|png|gif|webp|bmp|mp4|webm|mov)$/i;
+
 function scanImages() {
   if (!fs.existsSync(IMAGES_DIR)) {
     fs.mkdirSync(IMAGES_DIR, { recursive: true });
     return [];
   }
-  return fs.readdirSync(IMAGES_DIR)
-    .filter(f => /\.(jpg|jpeg|png|gif|webp|bmp|mp4|webm|mov)$/i.test(f))
-    .sort();
+  const results = [];
+  function walk(dir) {
+    for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (entry.name.startsWith('.')) continue;
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) { walk(full); continue; }
+      if (MEDIA_RE.test(entry.name)) {
+        results.push(path.relative(IMAGES_DIR, full));
+      }
+    }
+  }
+  walk(IMAGES_DIR);
+  return results.sort();
+}
+
+// --- Asset metadata ---
+const METADATA_FILE = path.join(IMAGES_DIR, 'metadata.json');
+let assetMetadata = {};
+try {
+  if (fs.existsSync(METADATA_FILE)) {
+    assetMetadata = JSON.parse(fs.readFileSync(METADATA_FILE, 'utf-8'));
+    console.log(`[metadata] loaded ${Object.keys(assetMetadata).length} asset descriptions`);
+  }
+} catch (e) { console.warn('[metadata] failed to load:', e.message); }
+
+// Helper: get category from relative path (folder name)
+function getCategory(relPath) {
+  const parts = relPath.split('/');
+  return parts.length > 1 ? parts[0] : 'uncategorized';
+}
+
+// Helper: get assets by category
+function getAssetsByCategory(category) {
+  return state.images.filter(f => getCategory(f) === category);
 }
 
 state.images = scanImages();
 
-// Watch images directory
+// Watch images directory (recursive)
 const watcher = chokidar.watch(IMAGES_DIR, {
   ignoreInitial: true,
+  ignored: /(^|[\/\\])\.|metadata\.json/,
   awaitWriteFinish: { stabilityThreshold: 500, pollInterval: 100 },
 });
 
 watcher.on('add', (filePath) => {
-  const filename = path.basename(filePath);
-  if (/\.(jpg|jpeg|png|gif|webp|bmp|mp4|webm|mov)$/i.test(filename)) {
-    if (!state.images.includes(filename)) {
-      state.images.push(filename);
+  const relPath = path.relative(IMAGES_DIR, filePath);
+  if (MEDIA_RE.test(relPath)) {
+    if (!state.images.includes(relPath)) {
+      state.images.push(relPath);
       state.images.sort();
-      console.log(`[images] added: ${filename} (${state.images.length} total)`);
+      console.log(`[images] added: ${relPath} (${state.images.length} total)`);
       broadcast({ type: 'images', images: state.images });
     }
   }
 });
 
-// File overwritten in place — tell browsers to bust their texture cache
 watcher.on('change', (filePath) => {
-  const filename = path.basename(filePath);
-  if (/\.(jpg|jpeg|png|gif|webp|bmp|mp4|webm|mov)$/i.test(filename)) {
-    console.log(`[images] changed: ${filename} — notifying clients to reload`);
-    broadcast({ type: 'imageChanged', filename });
+  const relPath = path.relative(IMAGES_DIR, filePath);
+  if (MEDIA_RE.test(relPath)) {
+    console.log(`[images] changed: ${relPath} — notifying clients to reload`);
+    broadcast({ type: 'imageChanged', filename: relPath });
   }
 });
 
 watcher.on('unlink', (filePath) => {
-  const filename = path.basename(filePath);
-  const idx = state.images.indexOf(filename);
+  const relPath = path.relative(IMAGES_DIR, filePath);
+  const idx = state.images.indexOf(relPath);
   if (idx !== -1) {
     state.images.splice(idx, 1);
     if (state.currentImageIndex >= state.images.length) {
       state.currentImageIndex = Math.max(0, state.images.length - 1);
     }
-    console.log(`[images] removed: ${filename} (${state.images.length} total)`);
+    console.log(`[images] removed: ${relPath} (${state.images.length} total)`);
     broadcast({ type: 'images', images: state.images, currentImageIndex: state.currentImageIndex });
   }
 });
@@ -356,7 +389,16 @@ app.post('/api/mode', (req, res) => {
 
 // List images
 app.get('/api/images', (req, res) => {
-  res.json({ images: state.images, currentImageIndex: state.currentImageIndex });
+  res.json({
+    images: state.images,
+    currentImageIndex: state.currentImageIndex,
+    metadata: assetMetadata,
+    byCategory: {
+      videos: getAssetsByCategory('videos'),
+      textures: getAssetsByCategory('textures'),
+      photos: getAssetsByCategory('photos'),
+    },
+  });
 });
 
 // Audio levels (reported by browser, read by agent)
@@ -487,12 +529,16 @@ function resolveToken(token, vars, ctx) {
         ? ctx.images[Math.floor(Math.random() * ctx.images.length)]
         : null;
     case '$random:photo': {
-      const photos = ctx.images.filter(f => /\.(jpg|jpeg|png|gif|webp|bmp)$/i.test(f));
+      const photos = getAssetsByCategory('photos');
       return photos.length > 0 ? photos[Math.floor(Math.random() * photos.length)] : null;
     }
     case '$random:video': {
-      const videos = ctx.images.filter(f => /\.(mp4|webm|mov)$/i.test(f));
+      const videos = getAssetsByCategory('videos');
       return videos.length > 0 ? videos[Math.floor(Math.random() * videos.length)] : null;
+    }
+    case '$random:texture': {
+      const textures = getAssetsByCategory('textures');
+      return textures.length > 0 ? textures[Math.floor(Math.random() * textures.length)] : null;
     }
     case '$dark': {
       const darkColors = ['#1a0a2e', '#0a1a0a', '#0f0505', '#050510', '#0a0a1a'];
@@ -689,9 +735,9 @@ const autopilot = {
   anchorSource: null, // stays consistent across transitions
 
   scheduleNext() {
-    // Copilot mode runs slower (15-25s) than autonomous (8-15s)
-    const base = state.mode === 'copilot' ? 15000 : 8000;
-    const jitter = state.mode === 'copilot' ? 10000 : 7000;
+    // Copilot mode runs slower (20-35s) than autonomous (12-22s)
+    const base = state.mode === 'copilot' ? 20000 : 12000;
+    const jitter = state.mode === 'copilot' ? 15000 : 10000;
     this.timer = setTimeout(() => {
       this.step();
       if (this.timer) this.scheduleNext();
@@ -701,7 +747,7 @@ const autopilot = {
   start() {
     if (this.timer) return;
     // Pick a video as anchor if available, otherwise first image
-    const videos = state.images.filter(f => /\.(mp4|webm|mov)$/i.test(f));
+    const videos = getAssetsByCategory('videos');
     this.anchorSource = videos.length > 0
       ? videos[Math.floor(Math.random() * videos.length)]
       : state.images[0] || null;
@@ -722,9 +768,9 @@ const autopilot = {
     }
   },
 
-  // Pick random images, excluding the anchor
+  // Pick random video sources, excluding the anchor
   pickSources(count) {
-    const pool = state.images.filter(f => f !== this.anchorSource);
+    const pool = getAssetsByCategory('videos').filter(f => f !== this.anchorSource);
     const picked = [];
     const shuffled = pool.sort(() => Math.random() - 0.5);
     for (let i = 0; i < count && i < shuffled.length; i++) {
@@ -748,14 +794,14 @@ const autopilot = {
   params() {
     const e = this.energy;
     return {
-      intensity: 0.2 + e * 0.7,
-      feedbackAmount: 0.7 + e * 0.22,
-      rotation: (0.001 + e * 0.012) * (Math.random() > 0.5 ? 1 : -1),
-      zoom: 1.0 + e * 0.008,
-      colorShift: e > 0.5 ? e * 0.3 : 0,
-      brightness: 0.8 + e * 0.35,
-      sourceMix: 0.55 - e * 0.2,
-      glitch: e > 0.6 ? (e - 0.6) * 0.5 : 0,
+      intensity: 0.1 + e * 0.25,
+      feedbackAmount: 0.5 + e * 0.15,
+      rotation: (0.0005 + e * 0.003) * (Math.random() > 0.5 ? 1 : -1),
+      zoom: 1.0 + e * 0.001,
+      colorShift: e > 0.8 ? (e - 0.8) * 0.15 : 0,
+      brightness: 1.0 + e * 0.15,
+      sourceMix: 0.6 - e * 0.1,
+      glitch: e > 0.8 ? (e - 0.8) * 0.15 : 0,
     };
   },
 
@@ -776,7 +822,7 @@ const autopilot = {
       this.energy = 0.1;
       this.energyDir = 1; // start building again
       // Pick a new anchor on each new cycle
-      const videos = state.images.filter(f => /\.(mp4|webm|mov)$/i.test(f));
+      const videos = getAssetsByCategory('videos');
       if (videos.length > 0) {
         this.anchorSource = videos[Math.floor(Math.random() * videos.length)];
       }
@@ -818,6 +864,13 @@ const autopilot = {
     }
     this.stepIndex++;
 
+    // Reverse all video sources by default
+    scene.forEach(pan => {
+      if (pan.source && /\.(mp4|webm|mov)$/i.test(pan.source)) {
+        pan.reverse = true;
+      }
+    });
+
     state.panels = scene;
     broadcast({ type: 'panels', panels: scene });
 
@@ -831,82 +884,78 @@ const autopilot = {
   getScenes(p) {
     const sources = this.pickSources(4);
     const anchor = this.anchorSource;
-    const darkColors = ['#1a0a2e', '#0a1a0a', '#0f0505', '#050510', '#0a0a1a'];
-    const darkColor = 'color:' + darkColors[Math.floor(Math.random() * darkColors.length)];
+    const fallback = (idx) => sources[idx] || anchor;
 
+    // All scenes use exactly 2 panels (id 0 and 1) so the engine always lerps
+    // between states instead of destroying/recreating panels. This keeps
+    // transitions smooth — no fade-in-from-black, no flicker.
     return [
-      // Scene: Anchor fullscreen with gentle feedback + blended photo
+      // Anchor fullscreen, secondary blended in
       [
         { id: 0, rect: { x: 0, y: 0, w: 1, h: 1 }, effect: 'feedback', source: anchor,
           source2: sources[0] || null,
-          state: { ...p, rotation: p.rotation * 0.5, sourceMix: 0.5, blend2: 0.25, blendMode: 0 } },
+          state: { ...p, rotation: p.rotation * 0.5, sourceMix: 0.6, blend2: 0.3, blendMode: 0 } },
+        { id: 1, rect: { x: 0, y: 0, w: 1, h: 1 }, effect: 'feedback', source: fallback(1),
+          state: { ...p, sourceMix: 0.6, opacity: 0.0 } },
       ],
 
-      // Scene: Split — anchor left, photo right
+      // Even split
       [
         { id: 0, rect: { x: 0, y: 0, w: 0.5, h: 1 }, effect: 'feedback', source: anchor,
-          state: { ...p, intensity: p.intensity * 0.7, sourceMix: 0.5 } },
-        { id: 1, rect: { x: 0.5, y: 0, w: 0.5, h: 1 }, effect: this.pickEffect(), source: sources[0] || null,
-          state: p },
+          state: { ...p, sourceMix: 0.6 } },
+        { id: 1, rect: { x: 0.5, y: 0, w: 0.5, h: 1 }, effect: this.pickEffect(), source: fallback(0),
+          state: { ...p, sourceMix: 0.6, opacity: 1.0 } },
       ],
 
-      // Scene: Cinema — anchor top, two photos bottom
+      // Wide anchor, narrow accent
       [
-        { id: 0, rect: { x: 0, y: 0, w: 1, h: 0.55 }, effect: 'feedback', source: anchor,
-          state: { ...p, intensity: p.intensity * 0.6, sourceMix: 0.5 } },
-        { id: 1, rect: { x: 0, y: 0.55, w: 0.5, h: 0.45 }, effect: this.pickEffect(), source: sources[0] || null,
-          state: p },
-        { id: 2, rect: { x: 0.5, y: 0.55, w: 0.5, h: 0.45 }, effect: this.pickEffect(), source: sources[1] || darkColor,
-          state: p },
+        { id: 0, rect: { x: 0, y: 0, w: 0.65, h: 1 }, effect: 'feedback', source: anchor,
+          state: { ...p, sourceMix: 0.6 } },
+        { id: 1, rect: { x: 0.65, y: 0, w: 0.35, h: 1 }, effect: this.pickEffect(), source: fallback(0),
+          state: { ...p, sourceMix: 0.55, opacity: 1.0 } },
       ],
 
-      // Scene: Spotlight — dark sides, blended photo center
+      // Narrow anchor, wide feature
       [
-        { id: 0, rect: { x: 0, y: 0, w: 0.2, h: 1 }, effect: 'colorshift', source: darkColor,
-          state: { intensity: 0.3, feedbackAmount: 0.9, rotation: 0.001, brightness: 0.6, sourceMix: 0.1 } },
-        { id: 1, rect: { x: 0.2, y: 0, w: 0.6, h: 1 }, effect: this.pickEffect(), source: sources[0] || anchor,
+        { id: 0, rect: { x: 0, y: 0, w: 0.35, h: 1 }, effect: 'feedback', source: anchor,
+          state: { ...p, sourceMix: 0.6 } },
+        { id: 1, rect: { x: 0.35, y: 0, w: 0.65, h: 1 }, effect: this.pickEffect(), source: fallback(0),
           source2: sources[1] || null,
-          state: { ...p, blend2: this.energy > 0.5 ? 0.35 : 0, blendMode: Math.floor(Math.random() * 4) } },
-        { id: 2, rect: { x: 0.8, y: 0, w: 0.2, h: 1 }, effect: 'colorshift', source: darkColor,
-          state: { intensity: 0.3, feedbackAmount: 0.9, rotation: -0.001, brightness: 0.6, sourceMix: 0.1 } },
+          state: { ...p, sourceMix: 0.6, blend2: 0.25, blendMode: Math.floor(Math.random() * 4), opacity: 1.0 } },
       ],
 
-      // Scene: Quad — anchor top-left, others fill
+      // Top/bottom split
       [
-        { id: 0, rect: { x: 0, y: 0, w: 0.4, h: 0.5 }, effect: 'feedback', source: anchor,
-          state: { ...p, intensity: p.intensity * 0.5, sourceMix: 0.5 } },
-        { id: 1, rect: { x: 0.4, y: 0, w: 0.6, h: 0.5 }, effect: this.pickEffect(), source: sources[0] || null,
-          state: p },
-        { id: 2, rect: { x: 0, y: 0.5, w: 0.5, h: 0.5 }, effect: this.pickEffect(), source: sources[1] || darkColor,
-          state: p },
-        { id: 3, rect: { x: 0.5, y: 0.5, w: 0.5, h: 0.5 }, effect: this.pickEffect(), source: sources[2] || null,
-          state: p },
+        { id: 0, rect: { x: 0, y: 0, w: 1, h: 0.5 }, effect: 'feedback', source: anchor,
+          state: { ...p, sourceMix: 0.6 } },
+        { id: 1, rect: { x: 0, y: 0.5, w: 1, h: 0.5 }, effect: this.pickEffect(), source: fallback(0),
+          state: { ...p, sourceMix: 0.55, opacity: 1.0 } },
       ],
 
-      // Scene: Triptych
+      // Full overlay — two sources layered via blend
       [
-        { id: 0, rect: { x: 0, y: 0, w: 0.3, h: 1 }, effect: 'feedback', source: anchor,
-          state: { ...p, intensity: p.intensity * 0.6, sourceMix: 0.5 } },
-        { id: 1, rect: { x: 0.3, y: 0, w: 0.4, h: 1 }, effect: this.pickEffect(), source: sources[0] || null,
-          state: p },
-        { id: 2, rect: { x: 0.7, y: 0, w: 0.3, h: 1 }, effect: this.pickEffect(), source: sources[1] || darkColor,
-          state: p },
+        { id: 0, rect: { x: 0, y: 0, w: 1, h: 1 }, effect: this.pickEffect(), source: fallback(0),
+          source2: sources[1] || anchor,
+          state: { ...p, sourceMix: 0.6, blend2: 0.35, blendMode: [0, 1, 3][Math.floor(Math.random() * 3)] } },
+        { id: 1, rect: { x: 0, y: 0, w: 1, h: 1 }, effect: 'feedback', source: anchor,
+          state: { ...p, sourceMix: 0.5, opacity: 0.3 } },
       ],
 
-      // Scene: Widescreen — big left, ambient right
+      // Dominant anchor with subtle secondary peek
       [
-        { id: 0, rect: { x: 0, y: 0, w: 0.7, h: 1 }, effect: this.pickEffect(), source: sources[0] || anchor,
-          state: p },
-        { id: 1, rect: { x: 0.7, y: 0, w: 0.3, h: 1 }, effect: 'noise', source: darkColor,
-          state: { intensity: 0.4, feedbackAmount: 0.85, rotation: 0.002, brightness: 0.5, sourceMix: 0.15 } },
+        { id: 0, rect: { x: 0, y: 0, w: 1, h: 1 }, effect: 'feedback', source: anchor,
+          state: { ...p, sourceMix: 0.6 } },
+        { id: 1, rect: { x: 0.1, y: 0.1, w: 0.8, h: 0.8 }, effect: this.pickEffect(), source: fallback(0),
+          state: { ...p, sourceMix: 0.55, opacity: 0.5 } },
       ],
 
-      // Scene: Full blast — two sources smashed together
+      // Cinema bars — anchor center, accent bars
       [
-        { id: 0, rect: { x: 0, y: 0, w: 1, h: 1 }, effect: this.pickEffect(), source: sources[0] || anchor,
-          source2: sources[1] || sources[0] || null,
-          state: { ...p, intensity: Math.min(p.intensity * 1.2, 1), glitch: p.glitch + 0.1,
-            blend2: 0.4 + this.energy * 0.3, blendMode: [0, 1, 3, 4][Math.floor(Math.random() * 4)] } },
+        { id: 0, rect: { x: 0.15, y: 0, w: 0.7, h: 1 }, effect: this.pickEffect(), source: fallback(0),
+          source2: sources[1] || anchor,
+          state: { ...p, sourceMix: 0.6, blend2: 0.2, blendMode: 0 } },
+        { id: 1, rect: { x: 0, y: 0, w: 1, h: 1 }, effect: 'feedback', source: anchor,
+          state: { ...p, sourceMix: 0.5, opacity: 0.25 } },
       ],
     ];
   },
