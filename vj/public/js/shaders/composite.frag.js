@@ -28,11 +28,6 @@ window.SHADER_COMPOSITE = {
       // Panel opacity (for smooth transitions)
       color.rgb *= uOpacity;
 
-      // Vignette
-      vec2 center = vUv - 0.5;
-      float vignette = 1.0 - dot(center, center) * 0.5;
-      color.rgb *= vignette;
-
       // Strobe flash: additive white
       color.rgb += vec3(uFlash);
 

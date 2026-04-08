@@ -86,6 +86,51 @@ window.VJ = window.VJ || {};
   const LERP_SPEED = 0.025; // smooth transitions for effect params
   const OPACITY_FADE_PER_FRAME = 0.005; // linear opacity fade (~200 frames ≈ 3.3s)
   const LERPABLE_KEYS = ['intensity', 'feedbackAmount', 'rotation', 'zoom', 'colorShift', 'brightness', 'glitch', 'sourceMix', 'opacity', 'blend2'];
+  // Keys that the drift engine oscillates around — everything lerpable except opacity and blendMode
+  const DRIFTABLE_KEYS = ['intensity', 'feedbackAmount', 'rotation', 'zoom', 'colorShift', 'brightness', 'glitch', 'sourceMix', 'blend2'];
+
+  // --- Drift engine ---
+  // Drift config received from the server. Each key maps to { amp, freq, phase }.
+  // The drift engine adds sine-wave offsets to panel.state to produce panel.renderState each frame.
+  // This means panel.state stays clean for lerp/keyboard, and drift oscillates around it.
+  let driftConfig = null;
+
+  function applyDrift(time) {
+    for (let pi = 0; pi < panels.length; pi++) {
+      const panel = panels[pi];
+      // Always start renderState from current (lerped) state
+      if (!panel.renderState) panel.renderState = { ...panel.state };
+
+      if (!driftConfig) {
+        // No drift — renderState = state
+        Object.assign(panel.renderState, panel.state);
+        continue;
+      }
+
+      // Copy all state first (including non-driftable keys like opacity, blendMode)
+      Object.assign(panel.renderState, panel.state);
+
+      // Apply sine offsets per driftable key
+      for (const key of DRIFTABLE_KEYS) {
+        const cfg = driftConfig[key];
+        if (!cfg) continue;
+        const base = panel.state[key];
+        if (base === undefined) continue;
+        // Golden ratio phase offset per panel gives visual counterpoint
+        const offset = cfg.amp * Math.sin(time * cfg.freq * 2 * Math.PI + cfg.phase + pi * 1.618);
+        let val = base + offset;
+        // Clamp to sane ranges
+        if (key === 'feedbackAmount') val = Math.max(0, Math.min(0.99, val));
+        else if (key === 'intensity') val = Math.max(0, Math.min(1, val));
+        else if (key === 'brightness') val = Math.max(0, Math.min(2, val));
+        else if (key === 'glitch') val = Math.max(0, Math.min(1, val));
+        else if (key === 'sourceMix') val = Math.max(0, Math.min(1, val));
+        else if (key === 'blend2') val = Math.max(0, Math.min(1, val));
+        else if (key === 'colorShift') val = Math.max(0, Math.min(1, val));
+        panel.renderState[key] = val;
+      }
+    }
+  }
 
   function createPanel(id, rect, effect, source, opts) {
     const w = Math.max(1, Math.min(960, Math.floor(window.innerWidth * rect.w)));
@@ -100,6 +145,7 @@ window.VJ = window.VJ || {};
       rtA: new THREE.WebGLRenderTarget(w, h, rtParams),
       rtB: new THREE.WebGLRenderTarget(w, h, rtParams),
       state: { ...DEFAULT_PANEL_STATE, opacity: 0 },
+      renderState: { ...DEFAULT_PANEL_STATE, opacity: 0 },
       targetState: { opacity: 1.0 },
       dying: false,
     };
@@ -292,38 +338,88 @@ window.VJ = window.VJ || {};
     if (msg.panels) applyPanelConfig(msg.panels);
   });
 
+  // Drift config from server — sets the sine-wave oscillation parameters
+  VJ.connection.on('drift', (msg) => {
+    if (msg.drift) {
+      driftConfig = msg.drift;
+      console.log('[engine] drift config received:', Object.keys(msg.drift).join(', '));
+    } else {
+      driftConfig = null;
+      console.log('[engine] drift cleared');
+    }
+  });
+
   function applyPanelConfig(configs) {
-    // Dying panels fade out. New panels fade in. No movement.
-    panels.forEach(p => {
-      if (!p.dying) {
+    // Build a map of incoming panel IDs
+    const incomingIds = new Set(configs.map((cfg, i) => cfg.id !== undefined ? cfg.id : i));
+    // Build a map of existing non-dying panels by ID
+    const existingById = {};
+    for (const p of panels) {
+      if (!p.dying) existingById[p.id] = p;
+    }
+
+    const updatedPanels = [];
+    const existingIdsUsed = new Set();
+
+    for (let i = 0; i < configs.length; i++) {
+      const cfg = configs[i];
+      const id = cfg.id !== undefined ? cfg.id : i;
+      const existing = existingById[id];
+
+      if (existing) {
+        // --- In-place update: preserve feedback buffers (rtA/rtB) ---
+        existingIdsUsed.add(id);
+        if (cfg.source !== undefined) existing.source = cfg.source;
+        if (cfg.source2 !== undefined) existing.source2 = cfg.source2;
+        if (cfg.effect) existing.effect = cfg.effect;
+        if (cfg.sourceIndex !== undefined) existing.sourceIndex = cfg.sourceIndex;
+        if (cfg.reverse !== undefined) existing.reverse = cfg.reverse;
+        if (cfg.rect) Object.assign(existing.rect, cfg.rect);
+        // Set target state — lerp system will smoothly transition
+        if (cfg.state) {
+          existing.targetState = { ...cfg.state, opacity: cfg.state.opacity !== undefined ? cfg.state.opacity : 1.0 };
+        }
+        updatedPanels.push(existing);
+        // console.log(`[engine] panel ${id} updated in-place`);
+      } else {
+        // --- New panel: create with fade-in ---
+        const p = createPanel(
+          id,
+          cfg.rect || { x: 0, y: 0, w: 1, h: 1 },
+          cfg.effect,
+          cfg.source,
+          { fadeIn: true, source2: cfg.source2 }
+        );
+        if (cfg.sourceIndex !== undefined) p.sourceIndex = cfg.sourceIndex;
+        if (cfg.reverse !== undefined) p.reverse = cfg.reverse;
+        if (cfg.state) {
+          Object.assign(p.state, cfg.state);
+          p.state.opacity = 0;
+          p.targetState = { ...cfg.state, opacity: 1.0 };
+        }
+        updatedPanels.push(p);
+        console.log(`[engine] panel ${id} created (fade-in)`);
+      }
+    }
+
+    // Mark panels whose IDs are no longer in the incoming config as dying (fade out)
+    for (const p of panels) {
+      if (!p.dying && !incomingIds.has(p.id)) {
         p.dying = true;
         p.targetState = { opacity: 0 };
       }
-    });
+    }
 
-    // Create all new panels with fade-in
-    const newPanels = configs.map((cfg, i) => {
-      const id = cfg.id !== undefined ? cfg.id : i;
-      const p = createPanel(
-        id,
-        cfg.rect || { x: 0, y: 0, w: 1, h: 1 },
-        cfg.effect,
-        cfg.source,
-        { fadeIn: true, source2: cfg.source2 }
-      );
-      if (cfg.sourceIndex !== undefined) p.sourceIndex = cfg.sourceIndex;
-      if (cfg.reverse !== undefined) p.reverse = cfg.reverse;
-      if (cfg.state) {
-        Object.assign(p.state, cfg.state);
-        p.state.opacity = 0;
-        p.targetState = { ...cfg.state, opacity: 1.0 };
-      }
-      return p;
-    });
+    // Combine: updated panels first, then any dying panels still fading out
+    const dyingPanels = panels.filter(p => p.dying);
+    panels = [...updatedPanels, ...dyingPanels];
+    activePanel = Math.min(activePanel, updatedPanels.length - 1);
 
-    panels = [...newPanels, ...panels.filter(p => p.dying)];
-    activePanel = Math.min(activePanel, newPanels.length - 1);
-    console.log('[engine] cross-dissolve:', newPanels.length, 'new,', panels.length - newPanels.length, 'fading out');
+    const newCount = updatedPanels.filter(p => !existingById[p.id]).length;
+    const reuseCount = updatedPanels.length - newCount;
+    if (newCount > 0 || dyingPanels.length > 0) {
+      console.log(`[engine] panel config: ${reuseCount} reused, ${newCount} new, ${dyingPanels.length} dying`);
+    }
   }
 
   // --- Keyboard controls ---
@@ -534,6 +630,7 @@ window.VJ = window.VJ || {};
     VJ.images.tick(dt);
     reportAudio(now);
     lerpPanels();
+    applyDrift(time);
 
     // Flash decay (global)
     state.flash *= 0.85;
@@ -546,22 +643,23 @@ window.VJ = window.VJ || {};
       const source2 = getPanelSourceTexture2(panel) || blackTexture;
       const effectMat = VJ.effects.getMaterialByName(panel.effect);
 
+      const rs = panel.renderState || panel.state;
       VJ.effects.updateUniformsOn(effectMat, {
         time: time,
-        intensity: panel.state.intensity,
-        feedback: panel.state.feedbackAmount,
-        rotation: panel.state.rotation,
-        zoom: panel.state.zoom,
-        brightness: panel.state.brightness ?? 1.05,
-        glitch: panel.state.glitch ?? 0.0,
-        colorShift: panel.state.colorShift,
+        intensity: rs.intensity,
+        feedback: rs.feedbackAmount,
+        rotation: rs.rotation,
+        zoom: rs.zoom,
+        brightness: rs.brightness ?? 1.05,
+        glitch: rs.glitch ?? 0.0,
+        colorShift: rs.colorShift,
         beat: VJ.audio.getBeat(),
-        sourceMix: panel.state.sourceMix ?? 0.5,
+        sourceMix: rs.sourceMix ?? 0.5,
         prevTexture: panel.rtA.texture,
         sourceTexture: source,
         sourceTexture2: source2,
-        blend2: panel.state.blend2 ?? 0.0,
-        blendMode: panel.state.blendMode ?? 0,
+        blend2: rs.blend2 ?? 0.0,
+        blendMode: rs.blendMode ?? 0,
         resolution: _resVec.set(panel.rtA.width, panel.rtA.height),
       });
 
@@ -596,10 +694,11 @@ window.VJ = window.VJ || {};
       renderer.setScissorTest(true);
 
       compositeMaterial.uniforms.tInput.value = panel.rtA.texture;
-      compositeMaterial.uniforms.uBrightness.value = panel.state.brightness ?? 1.05;
+      // Brightness is already applied in the effect shader — composite pass stays neutral
+      compositeMaterial.uniforms.uBrightness.value = 1.0;
       compositeMaterial.uniforms.uFlash.value = state.flash;
       compositeMaterial.uniforms.uBlackout.value = state.blackout ? 1.0 : 0.0;
-      compositeMaterial.uniforms.uOpacity.value = panel.state.opacity !== undefined ? panel.state.opacity : 1.0;
+      compositeMaterial.uniforms.uOpacity.value = crs.opacity !== undefined ? crs.opacity : 1.0;
       compositeMaterial.uniforms.uResolution.value.set(pw, ph);
 
       quad.material = compositeMaterial;

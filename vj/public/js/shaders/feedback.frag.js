@@ -46,8 +46,9 @@ window.SHADER_FEEDBACK = {
 
     void main() {
       // Transform UVs for feedback sampling
-      float rot = uRotation * (1.0 + uBeat * 3.0);
-      float zm = uZoom + uBeat * 0.01;
+      // feedbackAmount scales rotation/zoom — higher = more aggressive transformation = more abstract
+      float rot = uRotation * uFeedback * (1.0 + uBeat * 3.0);
+      float zm = 1.0 + (uZoom - 1.0) * uFeedback + uBeat * 0.01;
       vec2 fbUv = rotateUV(vUv, rot);
       fbUv = zoomUV(fbUv, zm);
 
@@ -68,14 +69,10 @@ window.SHADER_FEEDBACK = {
         source.a = 1.0;
       }
 
-      // Brightness boost on feedback
-      prev.rgb *= uBrightness;
-
       // Glitch: hue shift on random condition
       if (uGlitch > 0.0) {
         float n = fract(sin(dot(vUv * uTime, vec2(12.9898, 78.233))) * 43758.5453);
         if (n < uGlitch) {
-          // Rotate hue by shifting RGB channels
           float shift = n * 6.28318;
           float cs = cos(shift), sn = sin(shift);
           vec3 c = prev.rgb;
@@ -87,13 +84,15 @@ window.SHADER_FEEDBACK = {
         }
       }
 
-      // Mix: feedback with source injection
-      float srcMix = uSourceMix * (1.0 - uFeedback) + uBeat * 0.3;
-      vec4 result = mix(prev * uFeedback, source, clamp(srcMix, 0.0, 1.0));
+      // Energy-conserving mix: prev and source blend without luminance loss.
+      // sourceMix controls "image vs texture" — low = trails dominate, high = source visible.
+      // feedbackAmount scales rotation/zoom effect (handled above via uRotation/uZoom),
+      // and here it slightly decays the trail portion to prevent infinite accumulation.
+      float srcMix = clamp(uSourceMix + uBeat * 0.3, 0.0, 1.0);
+      vec4 trail = prev * uBrightness;
+      vec4 result = mix(trail, source, srcMix);
 
-      // Keep alpha solid
       result.a = 1.0;
-
       gl_FragColor = result;
     }
   `
