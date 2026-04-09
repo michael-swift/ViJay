@@ -693,6 +693,7 @@ window.VJ = window.VJ || {};
       renderer.setScissor(px, py, pw, ph);
       renderer.setScissorTest(true);
 
+      const crs = panel.renderState || panel.state;
       compositeMaterial.uniforms.tInput.value = panel.rtA.texture;
       // Brightness is already applied in the effect shader — composite pass stays neutral
       compositeMaterial.uniforms.uBrightness.value = 1.0;
