@@ -17,6 +17,7 @@ window.SHADER_COLORSHIFT = {
     uniform float uTime;
     uniform float uIntensity;
     uniform float uFeedback;
+    uniform float uBrightness;
     uniform float uColorShift;
     uniform float uBeat;
     uniform vec2 uResolution;

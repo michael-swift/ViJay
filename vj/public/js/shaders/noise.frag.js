@@ -17,6 +17,7 @@ window.SHADER_NOISE = {
     uniform float uTime;
     uniform float uIntensity;
     uniform float uFeedback;
+    uniform float uBrightness;
     uniform float uBeat;
     uniform vec2 uResolution;
     uniform float uSourceMix;

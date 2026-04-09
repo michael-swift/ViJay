@@ -17,6 +17,7 @@ window.SHADER_KALEIDOSCOPE = {
     uniform float uTime;
     uniform float uIntensity;
     uniform float uFeedback;
+    uniform float uBrightness;
     uniform float uRotation;
     uniform float uBeat;
     uniform vec2 uResolution;
