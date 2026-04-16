@@ -728,236 +728,277 @@ function getBuiltinTemplate(name) {
 // Stops when mode is switched to 'manual', resumes on 'autonomous' or 'copilot'.
 
 const autopilot = {
-  timer: null,
-  stepIndex: 0,
-  energy: 0, // 0-1 energy level, rises and falls over time
-  energyDir: 1, // 1 = building, -1 = dropping
-  anchorSource: null, // stays consistent across transitions
-
-  scheduleNext() {
-    // Copilot mode runs slower (20-35s) than autonomous (12-22s)
-    const base = state.mode === 'copilot' ? 20000 : 12000;
-    const jitter = state.mode === 'copilot' ? 15000 : 10000;
-    this.timer = setTimeout(() => {
-      this.step();
-      if (this.timer) this.scheduleNext();
-    }, base + Math.random() * jitter);
-  },
+  vibeTimer: null,
+  sourceTimer: null,
+  energy: 0,
+  energyDir: 1,
+  anchorSource: null,
+  cycleStart: 0,       // timestamp when the current energy cycle began
+  cycleDuration: 0,    // how long this cycle lasts (ms)
 
   start() {
-    if (this.timer) return;
-    // Pick a video as anchor if available, otherwise first image
-    const videos = getAssetsByCategory('videos');
-    this.anchorSource = videos.length > 0
-      ? videos[Math.floor(Math.random() * videos.length)]
-      : state.images[0] || null;
+    if (this.vibeTimer || this.sourceTimer) return;
+    // Pick an anchor source — prefer videos, fall back to any image
+    const pool = this.getSourcePool();
+    this.anchorSource = pool.length > 0
+      ? pool[Math.floor(Math.random() * pool.length)]
+      : null;
     this.energy = 0.1;
     this.energyDir = 1;
-    this.stepIndex = 0;
-    console.log(`[autopilot] started (${state.mode}) — anchor: ${this.anchorSource}`);
+    this.cycleStart = Date.now();
+    // Full energy cycle: 6-15 minutes
+    this.cycleDuration = (360 + Math.random() * 540) * 1000;
+    console.log(`[autopilot] started (${state.mode}) — anchor: ${this.anchorSource}, cycle: ${Math.round(this.cycleDuration/1000)}s`);
     autoCot(`autopilot engaged (${state.mode})`, 'thought');
-    this.step();
-    this.scheduleNext();
+
+    // Initial layout + vibe
+    this.setLayout();
+    this.pushVibe();
+    this.scheduleVibeTimer();
+    this.scheduleSourceTimer();
   },
 
   stop() {
-    if (this.timer) {
-      clearTimeout(this.timer);
-      this.timer = null;
-      console.log('[autopilot] stopped');
-    }
+    if (this.vibeTimer) { clearTimeout(this.vibeTimer); this.vibeTimer = null; }
+    if (this.sourceTimer) { clearTimeout(this.sourceTimer); this.sourceTimer = null; }
+    // Clear drift on clients
+    broadcast({ type: 'drift', drift: null });
+    console.log('[autopilot] stopped');
   },
 
-  // Pick random video sources, excluding the anchor
-  pickSources(count) {
-    const pool = getAssetsByCategory('videos').filter(f => f !== this.anchorSource);
-    const picked = [];
-    const shuffled = pool.sort(() => Math.random() - 0.5);
-    for (let i = 0; i < count && i < shuffled.length; i++) {
-      picked.push(shuffled[i]);
-    }
-    return picked;
+  // --- Timers ---
+
+  scheduleVibeTimer() {
+    const base = state.mode === 'copilot' ? 50000 : 45000;
+    const jitter = state.mode === 'copilot' ? 45000 : 45000;
+    this.vibeTimer = setTimeout(() => {
+      this.vibeTimer = null; // clear stale ID — timer has fired
+      if (state.mode === 'manual') return; // cancelled while waiting
+      this.evolveEnergy();
+      this.pushVibe();
+      this.scheduleVibeTimer();
+    }, base + Math.random() * jitter);
   },
 
-  // Pick an effect weighted by current energy
-  pickEffect() {
-    if (this.energy > 0.75) {
-      return ['glitch', 'glitch', 'noise', 'feedback'][Math.floor(Math.random() * 4)];
-    } else if (this.energy > 0.4) {
-      return ['feedback', 'glitch', 'colorshift', 'noise'][Math.floor(Math.random() * 4)];
-    } else {
-      return ['feedback', 'feedback', 'colorshift', 'noise'][Math.floor(Math.random() * 4)];
-    }
+  scheduleSourceTimer() {
+    const base = 20000;
+    const jitter = 20000;
+    this.sourceTimer = setTimeout(() => {
+      this.sourceTimer = null; // clear stale ID — timer has fired
+      if (state.mode === 'manual') return;
+      this.evolveSource();
+      this.scheduleSourceTimer();
+    }, base + Math.random() * jitter);
   },
 
-  // Map energy to parameter ranges
-  params() {
-    const e = this.energy;
-    return {
-      intensity: 0.1 + e * 0.25,
-      feedbackAmount: 0.5 + e * 0.15,
-      rotation: (0.0005 + e * 0.003) * (Math.random() > 0.5 ? 1 : -1),
-      zoom: 1.0 + e * 0.001,
-      colorShift: e > 0.8 ? (e - 0.8) * 0.15 : 0,
-      brightness: 1.0 + e * 0.15,
-      sourceMix: 0.6 - e * 0.1,
-      glitch: e > 0.8 ? (e - 0.8) * 0.15 : 0,
-    };
-  },
+  // --- Energy arc ---
+  // Smooth sinusoidal energy over the cycle duration, with some noise
 
-  step() {
-    if (state.mode === 'manual') {
-      this.stop();
+  evolveEnergy() {
+    if (state.mode === 'manual') { this.stop(); return; }
+
+    const elapsed = Date.now() - this.cycleStart;
+    const progress = elapsed / this.cycleDuration;
+
+    if (progress >= 1.0) {
+      // Cycle complete — reset
+      this.energy = 0.1;
+      this.energyDir = 1;
+      this.cycleStart = Date.now();
+      this.cycleDuration = (360 + Math.random() * 540) * 1000;
+      // New anchor for new cycle
+      const pool = this.getSourcePool();
+      if (pool.length > 0) {
+        this.anchorSource = pool[Math.floor(Math.random() * pool.length)];
+      }
+      // Hard layout change at cycle boundary
+      this.setLayout();
+      console.log(`[autopilot] new cycle — anchor: ${this.anchorSource}, duration: ${Math.round(this.cycleDuration/1000)}s`);
       return;
     }
 
-    // Evolve energy (copilot mode caps at 0.6 for gentler changes)
-    const energyStep = state.mode === 'copilot' ? 0.05 + Math.random() * 0.08 : 0.08 + Math.random() * 0.12;
-    const energyCap = state.mode === 'copilot' ? 0.6 : 1.0;
-    this.energy += this.energyDir * energyStep;
-    if (this.energy >= energyCap) {
-      this.energy = energyCap;
-      this.energyDir = -1; // start dropping
-    } else if (this.energy <= 0.05) {
-      this.energy = 0.1;
-      this.energyDir = 1; // start building again
-      // Pick a new anchor on each new cycle
-      const videos = getAssetsByCategory('videos');
-      if (videos.length > 0) {
-        this.anchorSource = videos[Math.floor(Math.random() * videos.length)];
-      }
-    }
-
-    const p = this.params();
-    const generativeScenes = this.getScenes(p);
-
-    // Build combined pool: saved cues resolved with current context + generative scenes
-    const ctx = { anchor: this.anchorSource, images: state.images, energy: this.energy };
-    const cueScenes = [];
-    for (const scene of Object.values(cues.scenes)) {
-      try {
-        let resolved;
-        if (scene.template) {
-          const tmpl = cues.templates[scene.template] || getBuiltinTemplate(scene.template);
-          if (tmpl) resolved = resolveTemplate(tmpl, scene.vars || {}, ctx);
-        } else if (scene.panels) {
-          resolved = scene.panels.map(sanitizePanel);
-        }
-        if (resolved) {
-          const sceneEnergy = inferEnergy(resolved);
-          // Filter by energy proximity (±0.3)
-          if (Math.abs(sceneEnergy - this.energy) <= 0.3) {
-            cueScenes.push(resolved);
-          }
-        }
-      } catch (e) { /* skip broken cues */ }
-    }
-
-    // Mix: pick from cue scenes 40% of the time if available, else generative
-    let scene;
-    let cueUsed = false;
-    if (cueScenes.length > 0 && Math.random() < 0.4) {
-      scene = cueScenes[Math.floor(Math.random() * cueScenes.length)];
-      cueUsed = true;
+    // Sinusoidal energy: rises to peak at 60% through cycle, then drops
+    const peakAt = 0.6;
+    let baseEnergy;
+    if (progress < peakAt) {
+      baseEnergy = 0.1 + 0.9 * Math.sin((progress / peakAt) * Math.PI * 0.5);
     } else {
-      scene = generativeScenes[this.stepIndex % generativeScenes.length];
+      baseEnergy = Math.cos(((progress - peakAt) / (1 - peakAt)) * Math.PI * 0.5);
     }
-    this.stepIndex++;
+    // Add a little noise so it's not perfectly smooth
+    baseEnergy += (Math.random() - 0.5) * 0.08;
 
-    // Reverse all video sources by default
-    scene.forEach(pan => {
-      if (pan.source && /\.(mp4|webm|mov)$/i.test(pan.source)) {
-        pan.reverse = true;
-      }
-    });
-
-    state.panels = scene;
-    broadcast({ type: 'panels', panels: scene });
-
-    const desc = scene.map((pan, i) =>
-      `${i}:${pan.effect}/${(pan.source || '?').replace(/\.(jpg|jpeg|png|mp4|webm)$/i, '').slice(0, 12)}`
-    ).join(' ');
-    const energyBar = '▓'.repeat(Math.round(this.energy * 10)) + '░'.repeat(10 - Math.round(this.energy * 10));
-    autoCot(`auto${cueUsed ? ' [cue]' : ''} [${energyBar}] ${desc}`, 'thought');
+    const cap = state.mode === 'copilot' ? 0.6 : 1.0;
+    this.energy = Math.max(0.05, Math.min(cap, baseEnergy));
   },
 
-  getScenes(p) {
-    const sources = this.pickSources(4);
-    const anchor = this.anchorSource;
-    const fallback = (idx) => sources[idx] || anchor;
+  // --- Layout ---
+  // Mostly fullscreen: 2 panels layered at the same rect
 
-    // All scenes use exactly 2 panels (id 0 and 1) so the engine always lerps
-    // between states instead of destroying/recreating panels. This keeps
-    // transitions smooth — no fade-in-from-black, no flicker.
-    return [
-      // Anchor fullscreen, secondary blended in
-      [
-        { id: 0, rect: { x: 0, y: 0, w: 1, h: 1 }, effect: 'feedback', source: anchor,
-          source2: sources[0] || null,
-          state: { ...p, rotation: p.rotation * 0.5, sourceMix: 0.6, blend2: 0.3, blendMode: 0 } },
-        { id: 1, rect: { x: 0, y: 0, w: 1, h: 1 }, effect: 'feedback', source: fallback(1),
-          state: { ...p, sourceMix: 0.6, opacity: 0.0 } },
-      ],
+  setLayout() {
+    const pool = this.getSourcePool();
+    const secondary = pool.filter(f => f !== this.anchorSource);
+    const secondarySource = secondary.length > 0
+      ? secondary[Math.floor(Math.random() * secondary.length)]
+      : this.anchorSource;
 
-      // Even split
-      [
-        { id: 0, rect: { x: 0, y: 0, w: 0.5, h: 1 }, effect: 'feedback', source: anchor,
-          state: { ...p, sourceMix: 0.6 } },
-        { id: 1, rect: { x: 0.5, y: 0, w: 0.5, h: 1 }, effect: this.pickEffect(), source: fallback(0),
-          state: { ...p, sourceMix: 0.6, opacity: 1.0 } },
-      ],
-
-      // Wide anchor, narrow accent
-      [
-        { id: 0, rect: { x: 0, y: 0, w: 0.65, h: 1 }, effect: 'feedback', source: anchor,
-          state: { ...p, sourceMix: 0.6 } },
-        { id: 1, rect: { x: 0.65, y: 0, w: 0.35, h: 1 }, effect: this.pickEffect(), source: fallback(0),
-          state: { ...p, sourceMix: 0.55, opacity: 1.0 } },
-      ],
-
-      // Narrow anchor, wide feature
-      [
-        { id: 0, rect: { x: 0, y: 0, w: 0.35, h: 1 }, effect: 'feedback', source: anchor,
-          state: { ...p, sourceMix: 0.6 } },
-        { id: 1, rect: { x: 0.35, y: 0, w: 0.65, h: 1 }, effect: this.pickEffect(), source: fallback(0),
-          source2: sources[1] || null,
-          state: { ...p, sourceMix: 0.6, blend2: 0.25, blendMode: Math.floor(Math.random() * 4), opacity: 1.0 } },
-      ],
-
-      // Top/bottom split
-      [
-        { id: 0, rect: { x: 0, y: 0, w: 1, h: 0.5 }, effect: 'feedback', source: anchor,
-          state: { ...p, sourceMix: 0.6 } },
-        { id: 1, rect: { x: 0, y: 0.5, w: 1, h: 0.5 }, effect: this.pickEffect(), source: fallback(0),
-          state: { ...p, sourceMix: 0.55, opacity: 1.0 } },
-      ],
-
-      // Full overlay — two sources layered via blend
-      [
-        { id: 0, rect: { x: 0, y: 0, w: 1, h: 1 }, effect: this.pickEffect(), source: fallback(0),
-          source2: sources[1] || anchor,
-          state: { ...p, sourceMix: 0.6, blend2: 0.35, blendMode: [0, 1, 3][Math.floor(Math.random() * 3)] } },
-        { id: 1, rect: { x: 0, y: 0, w: 1, h: 1 }, effect: 'feedback', source: anchor,
-          state: { ...p, sourceMix: 0.5, opacity: 0.3 } },
-      ],
-
-      // Dominant anchor with subtle secondary peek
-      [
-        { id: 0, rect: { x: 0, y: 0, w: 1, h: 1 }, effect: 'feedback', source: anchor,
-          state: { ...p, sourceMix: 0.6 } },
-        { id: 1, rect: { x: 0.1, y: 0.1, w: 0.8, h: 0.8 }, effect: this.pickEffect(), source: fallback(0),
-          state: { ...p, sourceMix: 0.55, opacity: 0.5 } },
-      ],
-
-      // Cinema bars — anchor center, accent bars
-      [
-        { id: 0, rect: { x: 0.15, y: 0, w: 0.7, h: 1 }, effect: this.pickEffect(), source: fallback(0),
-          source2: sources[1] || anchor,
-          state: { ...p, sourceMix: 0.6, blend2: 0.2, blendMode: 0 } },
-        { id: 1, rect: { x: 0, y: 0, w: 1, h: 1 }, effect: 'feedback', source: anchor,
-          state: { ...p, sourceMix: 0.5, opacity: 0.25 } },
-      ],
+    const panels = [
+      {
+        id: 0,
+        rect: { x: 0, y: 0, w: 1, h: 1 },
+        effect: 'feedback',
+        source: this.anchorSource,
+        reverse: true,
+        state: this.generateBaseState(this.energy),
+      },
+      {
+        id: 1,
+        rect: { x: 0, y: 0, w: 1, h: 1 },
+        effect: this.pickOverlayEffect(),
+        source: secondarySource,
+        reverse: true,
+        state: {
+          ...this.generateBaseState(this.energy),
+          opacity: 0.3 + Math.random() * 0.15,
+        },
+      },
     ];
+
+    const sanitized = panels.map(sanitizePanel);
+    state.panels = sanitized;
+    broadcast({ type: 'panels', panels: sanitized });
+
+    const desc = sanitized.map((p, i) =>
+      `${i}:${p.effect}/${(p.source || '?').replace(/\.(jpg|jpeg|png|mp4|webm)$/i, '').slice(0, 12)}`
+    ).join(' ');
+    console.log(`[autopilot] layout: ${desc}`);
+  },
+
+  // --- Vibe: generates base state + drift config, broadcasts both ---
+
+  pushVibe() {
+    if (state.mode === 'manual') { this.stop(); return; }
+
+    const e = this.energy;
+    const baseState = this.generateBaseState(e);
+    const drift = this.generateDrift(e);
+
+    // Update server-side panel states (for API reads and cue saves)
+    for (const panel of state.panels) {
+      panel.state = { ...panel.state, ...baseState };
+      // Panel 1 stays lower opacity
+      if (panel.id === 1) {
+        panel.state.opacity = 0.3 + Math.random() * 0.15;
+      }
+    }
+
+    // Occasionally swap panel 1's effect for texture variety
+    if (Math.random() < 0.33) {
+      const overlayEffect = this.pickOverlayEffect();
+      const panel1 = state.panels.find(p => p.id === 1);
+      if (panel1) panel1.effect = overlayEffect;
+    }
+
+    // Broadcast updated panels (in-place update — no flash) and drift
+    broadcast({ type: 'panels', panels: state.panels });
+    broadcast({ type: 'drift', drift });
+
+    const energyBar = '▓'.repeat(Math.round(e * 10)) + '░'.repeat(10 - Math.round(e * 10));
+    autoCot(`vibe [${energyBar}] e=${e.toFixed(2)}`, 'thought');
+  },
+
+  // --- Opportunistic source swap ---
+  // Only swaps when feedback trails are intense enough to bury the source
+
+  evolveSource() {
+    if (state.mode === 'manual') return;
+
+    // Check if current base state has conditions for invisible swap:
+    // high feedback (>0.7) + low sourceMix (<0.4) = source is buried in trails
+    const panel0 = state.panels.find(p => p.id === 0);
+    if (!panel0 || !panel0.state) return;
+
+    const fb = panel0.state.feedbackAmount || 0;
+    const sm = panel0.state.sourceMix || 0.5;
+
+    if (fb < 0.7 || sm > 0.4) {
+      // Not abstract enough — skip, wait for next tick
+      return;
+    }
+
+    // Swap a source on one of the panels
+    const allSources = this.getSourcePool();
+    if (allSources.length < 2) return;
+
+    const targetPanel = Math.random() < 0.6
+      ? state.panels.find(p => p.id === 1)  // Usually swap the overlay
+      : state.panels.find(p => p.id === 0); // Sometimes swap the anchor
+    if (!targetPanel) return;
+
+    const pool = allSources.filter(f => f !== targetPanel.source);
+    if (pool.length === 0) return;
+
+    const newSource = pool[Math.floor(Math.random() * pool.length)];
+    const oldSource = targetPanel.source;
+    targetPanel.source = newSource;
+    targetPanel.reverse = true;
+
+    // If we swapped the anchor, update our record
+    if (targetPanel.id === 0) {
+      this.anchorSource = newSource;
+    }
+
+    // Broadcast the updated panels — in-place update preserves feedback buffers
+    broadcast({ type: 'panels', panels: state.panels });
+    console.log(`[autopilot] source swap: panel ${targetPanel.id} ${(oldSource||'?').slice(0,15)} → ${newSource.slice(0,15)}`);
+  },
+
+  // --- Generators ---
+
+  generateBaseState(e) {
+    return {
+      intensity: 0.35 + e * 0.15,
+      feedbackAmount: 0.65 + e * 0.15,
+      rotation: (0.001 + e * 0.003) * (Math.random() > 0.5 ? 1 : -1),
+      zoom: 1.0 + e * 0.001,
+      colorShift: e * 0.08,
+      brightness: 1.0,                // neutral — no brightening/darkening, effect shader only
+      sourceMix: 0.55 - e * 0.1,      // the "image vs texture" center point
+      glitch: e > 0.7 ? (e - 0.7) * 0.1 : 0,
+      blend2: 0.25 + e * 0.15,
+      blendMode: Math.floor(Math.random() * 4),
+    };
+  },
+
+  generateDrift(e) {
+    // Amplitude scales 0.5x-1.5x with energy (wider swings at high energy)
+    const ampScale = 0.5 + e;
+    // Frequency scales 0.8x-1.2x with energy
+    const freqScale = 0.8 + e * 0.4;
+
+    return {
+      rotation:       { amp: 0.005 * ampScale, freq: 0.07 * freqScale, phase: Math.random() * Math.PI * 2 },
+      zoom:           { amp: 0.003 * ampScale, freq: 0.05 * freqScale, phase: Math.random() * Math.PI * 2 },
+      // feedbackAmount + sourceMix are the primary "image ↔ texture" oscillators.
+      // They run at different frequencies so they phase in and out of alignment.
+      feedbackAmount: { amp: 0.12 * ampScale,  freq: 0.03 * freqScale, phase: Math.random() * Math.PI * 2 },
+      sourceMix:      { amp: 0.18 * ampScale,  freq: 0.02 * freqScale, phase: Math.random() * Math.PI * 2 },
+      colorShift:     { amp: 0.06 * ampScale,  freq: 0.04 * freqScale, phase: Math.random() * Math.PI * 2 },
+      blend2:         { amp: 0.15 * ampScale,  freq: 0.02 * freqScale, phase: Math.random() * Math.PI * 2 },
+      // No brightness drift — brightness pulsing looks bad, texture transformation looks good
+      intensity:      { amp: 0.08 * ampScale,  freq: 0.035 * freqScale, phase: Math.random() * Math.PI * 2 },
+      glitch:         { amp: 0.03 * ampScale,  freq: 0.08 * freqScale, phase: Math.random() * Math.PI * 2 },
+    };
+  },
+
+  // Get the pool of sources to pick from — prefer videos, fall back to all images
+  getSourcePool() {
+    const videos = getAssetsByCategory('videos');
+    return videos.length > 0 ? videos : state.images;
+  },
+
+  pickOverlayEffect() {
+    return ['feedback', 'feedback', 'noise', 'colorshift'][Math.floor(Math.random() * 4)];
   },
 };
 

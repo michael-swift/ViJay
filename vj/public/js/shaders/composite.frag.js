@@ -25,14 +25,6 @@ window.SHADER_COMPOSITE = {
       // Brightness
       color.rgb *= uBrightness;
 
-      // Panel opacity (for smooth transitions)
-      color.rgb *= uOpacity;
-
-      // Vignette
-      vec2 center = vUv - 0.5;
-      float vignette = 1.0 - dot(center, center) * 0.5;
-      color.rgb *= vignette;
-
       // Strobe flash: additive white
       color.rgb += vec3(uFlash);
 
@@ -41,7 +33,9 @@ window.SHADER_COMPOSITE = {
 
       // Clamp
       color.rgb = clamp(color.rgb, 0.0, 1.0);
-      color.a = 1.0;
+
+      // Panel opacity as alpha — enables proper layering of overlapping panels
+      color.a = uOpacity;
 
       gl_FragColor = color;
     }

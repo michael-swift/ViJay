@@ -119,8 +119,8 @@ window.SHADER_VHS = {
         else source = mix(source, abs(source - src2), uBlend2);
         source.a = 1.0;
       }
-      float srcMix = uSourceMix * (1.0 - uFeedback) + uBeat * 0.2;
-      color = mix(color * uFeedback, source, clamp(srcMix, 0.0, 1.0));
+      float srcMix = clamp(uSourceMix + uBeat * 0.2, 0.0, 1.0);
+      color = mix(color * uBrightness, source, srcMix);
 
       color.a = 1.0;
       gl_FragColor = color;
