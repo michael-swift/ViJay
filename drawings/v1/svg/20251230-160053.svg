@@ -1,7 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 400">
-  <rect width="400" height="400" fill="#1a1a1a"/>
-  <!-- Heavy black shapes on dark gray -->
-  <rect x="50" y="80" width="120" height="200" fill="#0a0a0a"/>
-  <rect x="200" y="150" width="160" height="100" fill="#0a0a0a"/>
-  <rect x="250" y="280" width="80" height="80" fill="#0a0a0a"/>
-</svg>
