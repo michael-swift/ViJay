@@ -10,6 +10,7 @@ node_modules/
 
 # Video output
 *.mp4
+*.mov
 
 # Large binary assets
 **/assets/
