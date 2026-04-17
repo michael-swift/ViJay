@@ -37,7 +37,9 @@ window.VJ = window.VJ || {};
     depthTest: false,
     depthWrite: false,
     transparent: true,
-    blending: THREE.NormalBlending,
+    blending: THREE.CustomBlending,
+    blendSrc: THREE.SrcAlphaFactor,
+    blendDst: THREE.OneMinusSrcAlphaFactor,
   });
 
   // 1x1 black texture fallback

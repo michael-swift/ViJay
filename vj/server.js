@@ -735,6 +735,8 @@ const autopilot = {
   anchorSource: null,
   cycleStart: 0,       // timestamp when the current energy cycle began
   cycleDuration: 0,    // how long this cycle lasts (ms)
+  livePanel: 0,        // which panel ID is currently visible (0 or 1)
+  transitioning: false, // true during a crossfade between panels
 
   start() {
     if (this.vibeTimer || this.sourceTimer) return;
@@ -833,14 +835,18 @@ const autopilot = {
   },
 
   // --- Layout ---
-  // Mostly fullscreen: 2 panels layered at the same rect
+  // Two fullscreen panels: one "live" (visible), one "cooking" (invisible, building texture).
+  // Source transitions crossfade between the two cooked streams.
 
   setLayout() {
     const pool = this.getSourcePool();
-    const secondary = pool.filter(f => f !== this.anchorSource);
-    const secondarySource = secondary.length > 0
-      ? secondary[Math.floor(Math.random() * secondary.length)]
+    const nextSource = pool.filter(f => f !== this.anchorSource);
+    const cookingSource = nextSource.length > 0
+      ? nextSource[Math.floor(Math.random() * nextSource.length)]
       : this.anchorSource;
+
+    this.livePanel = 0;
+    this.transitioning = false;
 
     const panels = [
       {
@@ -849,18 +855,16 @@ const autopilot = {
         effect: 'feedback',
         source: this.anchorSource,
         reverse: true,
-        state: this.generateBaseState(this.energy),
+        state: { ...this.generateBaseState(this.energy), opacity: 1.0 },
       },
       {
         id: 1,
         rect: { x: 0, y: 0, w: 1, h: 1 },
         effect: this.pickOverlayEffect(),
-        source: secondarySource,
+        source: cookingSource,
         reverse: true,
-        state: {
-          ...this.generateBaseState(this.energy),
-          opacity: 0.3 + Math.random() * 0.15,
-        },
+        // Cooking panel: opacity 0 but running its own feedback loop, building texture
+        state: { ...this.generateBaseState(this.energy), opacity: 0.0 },
       },
     ];
 
@@ -871,7 +875,7 @@ const autopilot = {
     const desc = sanitized.map((p, i) =>
       `${i}:${p.effect}/${(p.source || '?').replace(/\.(jpg|jpeg|png|mp4|webm)$/i, '').slice(0, 12)}`
     ).join(' ');
-    console.log(`[autopilot] layout: ${desc}`);
+    console.log(`[autopilot] layout: ${desc} (live=${this.livePanel})`);
   },
 
   // --- Vibe: generates base state + drift config, broadcasts both ---
@@ -883,20 +887,17 @@ const autopilot = {
     const baseState = this.generateBaseState(e);
     const drift = this.generateDrift(e);
 
-    // Update server-side panel states (for API reads and cue saves)
+    // Update server-side panel states — preserve each panel's opacity role
     for (const panel of state.panels) {
-      panel.state = { ...panel.state, ...baseState };
-      // Panel 1 stays lower opacity
-      if (panel.id === 1) {
-        panel.state.opacity = 0.3 + Math.random() * 0.15;
-      }
+      const currentOpacity = panel.state ? panel.state.opacity : 0;
+      panel.state = { ...panel.state, ...baseState, opacity: currentOpacity };
     }
 
-    // Occasionally swap panel 1's effect for texture variety
+    // Occasionally swap the cooking panel's effect for texture variety
+    const cookingId = this.livePanel === 0 ? 1 : 0;
     if (Math.random() < 0.33) {
-      const overlayEffect = this.pickOverlayEffect();
-      const panel1 = state.panels.find(p => p.id === 1);
-      if (panel1) panel1.effect = overlayEffect;
+      const cookingPanel = state.panels.find(p => p.id === cookingId);
+      if (cookingPanel) cookingPanel.effect = this.pickOverlayEffect();
     }
 
     // Broadcast updated panels (in-place update — no flash) and drift
@@ -907,50 +908,54 @@ const autopilot = {
     autoCot(`vibe [${energyBar}] e=${e.toFixed(2)}`, 'thought');
   },
 
-  // --- Opportunistic source swap ---
-  // Only swaps when feedback trails are intense enough to bury the source
+  // --- Source evolution via crossfade ---
+  // The cooking panel has been running its feedback loop invisibly at opacity 0,
+  // building up texture. Now we crossfade: bring it up, fade the live panel down.
+  // Once done, the old live panel becomes the new cooking panel with a fresh source.
 
   evolveSource() {
     if (state.mode === 'manual') return;
+    if (this.transitioning) return; // already mid-crossfade
 
-    // Check if current base state has conditions for invisible swap:
-    // high feedback (>0.7) + low sourceMix (<0.4) = source is buried in trails
-    const panel0 = state.panels.find(p => p.id === 0);
-    if (!panel0 || !panel0.state) return;
+    const liveId = this.livePanel;
+    const cookingId = liveId === 0 ? 1 : 0;
+    const live = state.panels.find(p => p.id === liveId);
+    const cooking = state.panels.find(p => p.id === cookingId);
+    if (!live || !cooking) return;
 
-    const fb = panel0.state.feedbackAmount || 0;
-    const sm = panel0.state.sourceMix || 0.5;
+    this.transitioning = true;
 
-    if (fb < 0.7 || sm > 0.4) {
-      // Not abstract enough — skip, wait for next tick
-      return;
-    }
-
-    // Swap a source on one of the panels
-    const allSources = this.getSourcePool();
-    if (allSources.length < 2) return;
-
-    const targetPanel = Math.random() < 0.6
-      ? state.panels.find(p => p.id === 1)  // Usually swap the overlay
-      : state.panels.find(p => p.id === 0); // Sometimes swap the anchor
-    if (!targetPanel) return;
-
-    const pool = allSources.filter(f => f !== targetPanel.source);
-    if (pool.length === 0) return;
-
-    const newSource = pool[Math.floor(Math.random() * pool.length)];
-    const oldSource = targetPanel.source;
-    targetPanel.source = newSource;
-    targetPanel.reverse = true;
-
-    // If we swapped the anchor, update our record
-    if (targetPanel.id === 0) {
-      this.anchorSource = newSource;
-    }
-
-    // Broadcast the updated panels — in-place update preserves feedback buffers
+    // Crossfade: bring cooking panel up to 1.0, fade live panel down to 0.0
+    // The client's lerp system handles the smooth transition over ~3.3s
+    cooking.state.opacity = 1.0;
+    live.state.opacity = 0.0;
     broadcast({ type: 'panels', panels: state.panels });
-    console.log(`[autopilot] source swap: panel ${targetPanel.id} ${(oldSource||'?').slice(0,15)} → ${newSource.slice(0,15)}`);
+
+    const oldSource = live.source;
+    console.log(`[autopilot] crossfade: panel ${cookingId} fading in, panel ${liveId} fading out`);
+
+    // After the crossfade completes (~5s to be safe), swap roles
+    setTimeout(() => {
+      this.livePanel = cookingId;
+      this.transitioning = false;
+
+      // The old live panel is now invisible — assign it a new source to cook
+      const pool = this.getSourcePool();
+      const available = pool.filter(f => f !== cooking.source);
+      const newSource = available.length > 0
+        ? available[Math.floor(Math.random() * available.length)]
+        : pool[0] || null;
+
+      live.source = newSource;
+      live.reverse = true;
+      live.effect = this.pickOverlayEffect();
+      // Reset its state so it cooks fresh texture at opacity 0
+      live.state = { ...this.generateBaseState(this.energy), opacity: 0.0 };
+
+      this.anchorSource = cooking.source;
+      broadcast({ type: 'panels', panels: state.panels });
+      console.log(`[autopilot] roles swapped: live=${cookingId} cooking=${liveId} (${(newSource||'?').slice(0,15)})`);
+    }, 5000);
   },
 
   // --- Generators ---
@@ -961,40 +966,44 @@ const autopilot = {
       feedbackAmount: 0.65 + e * 0.15,
       rotation: (0.001 + e * 0.003) * (Math.random() > 0.5 ? 1 : -1),
       zoom: 1.0 + e * 0.001,
-      colorShift: e * 0.08,
-      brightness: 1.0,                // neutral — no brightening/darkening, effect shader only
-      sourceMix: 0.55 - e * 0.1,      // the "image vs texture" center point
-      glitch: e > 0.7 ? (e - 0.7) * 0.1 : 0,
+      colorShift: 0.02 + e * 0.1,     // always some color drift, more at high energy
+      brightness: 1.05 + e * 0.1,     // above 1.0 = colors over-saturate in feedback loop
+      sourceMix: 0.55 - e * 0.1,
+      glitch: 0.02 + e * 0.08,        // always a little glitch, ramps with energy
       blend2: 0.25 + e * 0.15,
       blendMode: Math.floor(Math.random() * 4),
     };
   },
 
   generateDrift(e) {
-    // Amplitude scales 0.5x-1.5x with energy (wider swings at high energy)
+    // Amplitude scales 0.5x-1.5x with energy
     const ampScale = 0.5 + e;
-    // Frequency scales 0.8x-1.2x with energy
+    // Frequencies are SLOW — full cycles over 60-200 seconds for gradual transformation
     const freqScale = 0.8 + e * 0.4;
 
     return {
-      rotation:       { amp: 0.005 * ampScale, freq: 0.07 * freqScale, phase: Math.random() * Math.PI * 2 },
-      zoom:           { amp: 0.003 * ampScale, freq: 0.05 * freqScale, phase: Math.random() * Math.PI * 2 },
-      // feedbackAmount + sourceMix are the primary "image ↔ texture" oscillators.
-      // They run at different frequencies so they phase in and out of alignment.
-      feedbackAmount: { amp: 0.12 * ampScale,  freq: 0.03 * freqScale, phase: Math.random() * Math.PI * 2 },
-      sourceMix:      { amp: 0.18 * ampScale,  freq: 0.02 * freqScale, phase: Math.random() * Math.PI * 2 },
-      colorShift:     { amp: 0.06 * ampScale,  freq: 0.04 * freqScale, phase: Math.random() * Math.PI * 2 },
-      blend2:         { amp: 0.15 * ampScale,  freq: 0.02 * freqScale, phase: Math.random() * Math.PI * 2 },
-      // No brightness drift — brightness pulsing looks bad, texture transformation looks good
-      intensity:      { amp: 0.08 * ampScale,  freq: 0.035 * freqScale, phase: Math.random() * Math.PI * 2 },
-      glitch:         { amp: 0.03 * ampScale,  freq: 0.08 * freqScale, phase: Math.random() * Math.PI * 2 },
+      rotation:       { amp: 0.004 * ampScale, freq: 0.03 * freqScale, phase: Math.random() * Math.PI * 2 },
+      zoom:           { amp: 0.002 * ampScale, freq: 0.02 * freqScale, phase: Math.random() * Math.PI * 2 },
+      // feedbackAmount + sourceMix: moderate oscillation = image ↔ texture over ~60-90s
+      feedbackAmount: { amp: 0.12 * ampScale,  freq: 0.015 * freqScale, phase: Math.random() * Math.PI * 2 },
+      sourceMix:      { amp: 0.15 * ampScale,  freq: 0.012 * freqScale, phase: Math.random() * Math.PI * 2 },
+      // colorShift: slow hue wander creates psychedelic color banding
+      colorShift:     { amp: 0.08 * ampScale,  freq: 0.02 * freqScale, phase: Math.random() * Math.PI * 2 },
+      blend2:         { amp: 0.12 * ampScale,  freq: 0.013 * freqScale, phase: Math.random() * Math.PI * 2 },
+      // brightness oscillates above 1.0 — peaks push colors to clipping = oversaturation
+      brightness:     { amp: 0.08 * ampScale,  freq: 0.018 * freqScale, phase: Math.random() * Math.PI * 2 },
+      intensity:      { amp: 0.06 * ampScale,  freq: 0.016 * freqScale, phase: Math.random() * Math.PI * 2 },
+      glitch:         { amp: 0.04 * ampScale,  freq: 0.035 * freqScale, phase: Math.random() * Math.PI * 2 },
     };
   },
 
-  // Get the pool of sources to pick from — prefer videos, fall back to all images
+  // Get the pool of sources to pick from — prefer textures, then videos, fall back to all
   getSourcePool() {
+    const textures = getAssetsByCategory('textures');
+    if (textures.length > 0) return textures;
     const videos = getAssetsByCategory('videos');
-    return videos.length > 0 ? videos : state.images;
+    if (videos.length > 0) return videos;
+    return state.images;
   },
 
   pickOverlayEffect() {
