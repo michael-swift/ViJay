@@ -87,7 +87,7 @@ window.VJ = window.VJ || {};
   // LERP_SPEED controls how fast transitions are (higher = faster, 1.0 = instant).
   const LERP_SPEED = 0.025; // smooth transitions for effect params
   const OPACITY_FADE_PER_FRAME = 0.005; // linear opacity fade (~200 frames ≈ 3.3s)
-  const LERPABLE_KEYS = ['intensity', 'feedbackAmount', 'rotation', 'zoom', 'colorShift', 'brightness', 'glitch', 'sourceMix', 'opacity', 'blend2'];
+  const LERPABLE_KEYS = ['intensity', 'feedbackAmount', 'rotation', 'zoom', 'colorShift', 'brightness', 'glitch', 'sourceMix', 'opacity', 'blend2', 'mode', 'diffusion', 'reaction'];
   // Keys that the drift engine oscillates around — everything lerpable except opacity and blendMode
   const DRIFTABLE_KEYS = ['intensity', 'feedbackAmount', 'rotation', 'zoom', 'colorShift', 'brightness', 'glitch', 'sourceMix', 'blend2'];
 
@@ -662,6 +662,9 @@ window.VJ = window.VJ || {};
         sourceTexture2: source2,
         blend2: rs.blend2 ?? 0.0,
         blendMode: rs.blendMode ?? 0,
+        mode: rs.mode ?? 0.0,
+        diffusion: rs.diffusion ?? 1.0,
+        reaction: rs.reaction ?? 0.5,
         resolution: _resVec.set(panel.rtA.width, panel.rtA.height),
       });
 

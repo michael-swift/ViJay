@@ -28,6 +28,9 @@ window.SHADER_FEEDBACK = {
     uniform sampler2D tSource2;    // second source for blending
     uniform float uBlend2;         // how much second source to blend in (0-1)
     uniform int uBlendMode;        // 0=mix, 1=add, 2=multiply, 3=screen, 4=diff
+    uniform float uMode;           // 0=classic camera feedback, 1=reaction-diffusion, fractional=morph
+    uniform float uDiffusion;      // RD blur radius in pixels (0-3)
+    uniform float uReaction;       // RD non-linearity strength (0-1)
 
     // Rotate UV around center
     vec2 rotateUV(vec2 uv, float angle) {
@@ -52,8 +55,24 @@ window.SHADER_FEEDBACK = {
       vec2 fbUv = rotateUV(vUv, rot);
       fbUv = zoomUV(fbUv, zm);
 
-      // Sample previous frame with transformed UVs
-      vec4 prev = texture2D(tPrev, fbUv);
+      // Sample previous frame with transformed UVs.
+      // Classic path = single tap (camera-at-CRT aesthetic).
+      // Reaction-diffusion path = 5-tap blur + unsharp mask + s-curve on the blurred
+      // result, producing self-organizing Turing-style edges. uMode morphs between them.
+      vec4 classicPrev = texture2D(tPrev, fbUv);
+      vec4 prev = classicPrev;
+      if (uMode > 0.001) {
+        vec2 texel = uDiffusion / uResolution;
+        vec4 n = texture2D(tPrev, fbUv + vec2(0.0, texel.y));
+        vec4 s = texture2D(tPrev, fbUv - vec2(0.0, texel.y));
+        vec4 e = texture2D(tPrev, fbUv + vec2(texel.x, 0.0));
+        vec4 w = texture2D(tPrev, fbUv - vec2(texel.x, 0.0));
+        vec4 blur = (classicPrev + n + s + e + w) * 0.2;
+        vec3 sharp = classicPrev.rgb + (classicPrev.rgb - blur.rgb) * 2.0;
+        vec3 curved = smoothstep(vec3(0.3), vec3(0.7), sharp);
+        vec3 rd = mix(blur.rgb, curved, uReaction);
+        prev = vec4(mix(classicPrev.rgb, rd, uMode), 1.0);
+      }
 
       // Sample source image (straight, no transform)
       vec4 source = texture2D(tSource, vUv);

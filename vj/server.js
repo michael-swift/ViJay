@@ -247,6 +247,9 @@ function sanitizePanel(p, idx) {
     if (p.state.blend2 !== undefined) panel.state.blend2 = clampNum(p.state.blend2, 0, 1, 0);
     if (p.state.blendMode !== undefined) panel.state.blendMode = clampNum(p.state.blendMode, 0, 4, 0);
     if (p.state.opacity !== undefined) panel.state.opacity = clampNum(p.state.opacity, 0, 1, 1);
+    if (p.state.mode !== undefined) panel.state.mode = clampNum(p.state.mode, 0, 1, 0);
+    if (p.state.diffusion !== undefined) panel.state.diffusion = clampNum(p.state.diffusion, 0, 3, 1);
+    if (p.state.reaction !== undefined) panel.state.reaction = clampNum(p.state.reaction, 0, 1, 0.5);
   }
   return panel;
 }
