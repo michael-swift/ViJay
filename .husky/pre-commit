@@ -1,0 +1,2 @@
+#!/bin/sh
+cd vj && npx eslint public/js/engine.js public/js/shaders/*.js
