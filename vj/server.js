@@ -866,8 +866,8 @@ const autopilot = {
         effect: this.pickOverlayEffect(),
         source: cookingSource,
         reverse: true,
-        // Cooking panel: opacity 0 but running its own feedback loop, building texture
-        state: { ...this.generateBaseState(this.energy), opacity: 0.0 },
+        // Cooking panel: low sourceMix so feedback builds abstract texture while invisible
+        state: this.generateCookingState(this.energy),
       },
     ];
 
@@ -916,6 +916,24 @@ const autopilot = {
   // building up texture. Now we crossfade: bring it up, fade the live panel down.
   // Once done, the old live panel becomes the new cooking panel with a fresh source.
 
+  // Generate params for a cooking panel — low sourceMix so feedback trails
+  // accumulate into abstract texture, high glitch/colorShift for visual interest
+  generateCookingState(e) {
+    return {
+      intensity: 0.5 + e * 0.2,           // higher intensity for more effect
+      feedbackAmount: 0.85 + e * 0.1,      // high — trails persist, texture builds
+      rotation: (0.003 + e * 0.005) * (Math.random() > 0.5 ? 1 : -1),
+      zoom: 1.001 + e * 0.002,
+      colorShift: 0.1 + e * 0.2,          // strong color wandering — psychedelic texture
+      brightness: 0.98,                    // slightly below 1.0 — trails darken, no blowout
+      sourceMix: 0.15 + e * 0.05,         // LOW — feedback dominates, source barely visible
+      glitch: 0.08 + e * 0.15,            // glitchy texture while cooking
+      blend2: 0.2 + e * 0.15,
+      blendMode: Math.floor(Math.random() * 4),
+      opacity: 0.0,                        // invisible while cooking
+    };
+  },
+
   evolveSource() {
     if (state.mode === 'manual') return;
     if (this.transitioning) return; // already mid-crossfade
@@ -928,51 +946,65 @@ const autopilot = {
 
     this.transitioning = true;
 
-    // Crossfade: bring cooking panel up to 1.0, fade live panel down to 0.0
-    // The client's lerp system handles the smooth transition over ~3.3s
-    cooking.state.opacity = 1.0;
-    live.state.opacity = 0.0;
+    // Step 1: Push the live panel toward abstract (bury the source image)
+    live.state.sourceMix = 0.08;
+    live.state.feedbackAmount = Math.min(0.95, (live.state.feedbackAmount || 0.7) + 0.15);
+    live.state.glitch = Math.min(0.3, (live.state.glitch || 0) + 0.15);
+    live.state.colorShift = Math.min(0.4, (live.state.colorShift || 0) + 0.15);
+    live.state.brightness = 1.0;  // neutral — glitch/colorShift create texture, not white blowout
     broadcast({ type: 'panels', panels: state.panels });
 
-    const oldSource = live.source;
-    console.log(`[autopilot] crossfade: panel ${cookingId} fading in, panel ${liveId} fading out`);
+    console.log(`[autopilot] burying panel ${liveId}, preparing crossfade to ${cookingId}`);
 
-    // After the crossfade completes (~5s to be safe), swap roles
+    // Step 2: After the live panel has gone abstract (~4s), start the crossfade
+    // Both panels are now textured — live is abstract trails, cooking has been
+    // building its own feedback texture the whole time
     setTimeout(() => {
-      this.livePanel = cookingId;
-      this.transitioning = false;
-
-      // The old live panel is now invisible — assign it a new source to cook
-      const pool = this.getSourcePool();
-      const available = pool.filter(f => f !== cooking.source);
-      const newSource = available.length > 0
-        ? available[Math.floor(Math.random() * available.length)]
-        : pool[0] || null;
-
-      live.source = newSource;
-      live.reverse = true;
-      live.effect = this.pickOverlayEffect();
-      // Reset its state so it cooks fresh texture at opacity 0
-      live.state = { ...this.generateBaseState(this.energy), opacity: 0.0 };
-
-      this.anchorSource = cooking.source;
+      cooking.state.opacity = 1.0;
+      live.state.opacity = 0.0;
       broadcast({ type: 'panels', panels: state.panels });
-      console.log(`[autopilot] roles swapped: live=${cookingId} cooking=${liveId} (${(newSource||'?').slice(0,15)})`);
-    }, 5000);
+      console.log(`[autopilot] crossfade: panel ${cookingId} fading in, panel ${liveId} fading out`);
+
+      // Step 3: After crossfade completes, swap roles and start cooking next
+      setTimeout(() => {
+        this.livePanel = cookingId;
+        this.transitioning = false;
+
+        // Bring the new live panel's sourceMix back up so image gradually emerges
+        cooking.state.sourceMix = this.generateBaseState(this.energy).sourceMix;
+        cooking.state.glitch = this.generateBaseState(this.energy).glitch;
+
+        // The old live panel is now invisible — assign a new source and cook it
+        const pool = this.getSourcePool();
+        const available = pool.filter(f => f !== cooking.source);
+        const newSource = available.length > 0
+          ? available[Math.floor(Math.random() * available.length)]
+          : pool[0] || null;
+
+        live.source = newSource;
+        live.reverse = true;
+        live.effect = this.pickOverlayEffect();
+        live.state = this.generateCookingState(this.energy);
+
+        this.anchorSource = cooking.source;
+        broadcast({ type: 'panels', panels: state.panels });
+        console.log(`[autopilot] roles swapped: live=${cookingId} cooking=${liveId} (${(newSource||'?').slice(0,15)})`);
+      }, 5000);
+    }, 4000);
   },
 
   // --- Generators ---
 
   generateBaseState(e) {
     return {
-      intensity: 0.35 + e * 0.15,
+      intensity: 0.4 + e * 0.2,
       feedbackAmount: 0.65 + e * 0.15,
       rotation: (0.001 + e * 0.003) * (Math.random() > 0.5 ? 1 : -1),
       zoom: 1.0 + e * 0.001,
-      colorShift: 0.02 + e * 0.1,     // always some color drift, more at high energy
-      brightness: 1.05 + e * 0.1,     // above 1.0 = colors over-saturate in feedback loop
+      colorShift: 0.03 + e * 0.12,    // always some color drift
+      brightness: 1.0,                 // neutral — prevents white blowout in feedback loop
       sourceMix: 0.55 - e * 0.1,
-      glitch: 0.02 + e * 0.08,        // always a little glitch, ramps with energy
+      glitch: 0.04 + e * 0.12,        // more baseline glitch
       blend2: 0.25 + e * 0.15,
       blendMode: Math.floor(Math.random() * 4),
     };
@@ -993,8 +1025,7 @@ const autopilot = {
       // colorShift: slow hue wander creates psychedelic color banding
       colorShift:     { amp: 0.08 * ampScale,  freq: 0.02 * freqScale, phase: Math.random() * Math.PI * 2 },
       blend2:         { amp: 0.12 * ampScale,  freq: 0.013 * freqScale, phase: Math.random() * Math.PI * 2 },
-      // brightness oscillates above 1.0 — peaks push colors to clipping = oversaturation
-      brightness:     { amp: 0.08 * ampScale,  freq: 0.018 * freqScale, phase: Math.random() * Math.PI * 2 },
+      // No brightness drift — keep at 1.0 to prevent white blowout at low sourceMix
       intensity:      { amp: 0.06 * ampScale,  freq: 0.016 * freqScale, phase: Math.random() * Math.PI * 2 },
       glitch:         { amp: 0.04 * ampScale,  freq: 0.035 * freqScale, phase: Math.random() * Math.PI * 2 },
     };
@@ -1010,7 +1041,7 @@ const autopilot = {
   },
 
   pickOverlayEffect() {
-    return ['feedback', 'feedback', 'noise', 'colorshift'][Math.floor(Math.random() * 4)];
+    return ['feedback', 'glitch', 'noise', 'colorshift', 'pixelate'][Math.floor(Math.random() * 5)];
   },
 };
 
